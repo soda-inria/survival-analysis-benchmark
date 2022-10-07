@@ -1,4 +1,4 @@
-# Benchmarking 
+# Benchmarking predictive survival analysis models
 
 This repository is dedicated to the evaluation of predictive survival models on large-ish datasets.
 
