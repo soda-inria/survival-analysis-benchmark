@@ -160,8 +160,39 @@ def compute_subscription_id(t, relative_to_epoch=False, epoch=ibis.date(2000, 1,
 compute_subscription_id(compute_resubscriptions(example_transactions)).execute()
 
 # %%
+subscriptions = compute_subscription_id(compute_resubscriptions(transactions))
+
+# %%
 assert (
     compute_subscription_id(compute_resubscriptions(transactions)).count().execute()
     == transactions.count().execute()
 )
+# %%
+import numpy as np
+
+
+def subsample_by_unique(t, col_name="msno", size=1, seed=None):
+    unique_col = t[[col_name]].distinct()
+    num_unique = unique_col.count().execute()
+    assert size <= num_unique
+    positional_values = unique_col[ibis.row_number().name("seq_id"), col_name]
+    selected_indices = np.random.RandomState(seed).choice(
+        num_unique, size=size, replace=False
+    )
+    selected_rows = positional_values.filter(
+        positional_values.seq_id.isin(selected_indices)
+    )[[col_name]]
+    return t.inner_join(selected_rows, col_name, suffixes=["", "_"])[t.columns]
+
+
+subsample_by_unique(transactions, "msno", size=3).sort_by(
+    ["msno", "transaction_date", "membership_expire_date"]
+).execute()
+
+# %%
+
+subsample_by_unique(subscriptions, "msno", size=3).sort_by(
+    ["msno", "transaction_date", "membership_expire_date"]
+).execute()
+
 # %%
