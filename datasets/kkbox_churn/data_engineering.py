@@ -157,10 +157,12 @@ def compute_subscription_id(t, relative_to_epoch=False, epoch=ibis.date(2000, 1,
     )
 
 
-compute_subscription_id(compute_resubscriptions(example_transactions)).execute()
+def compute_subscriptions(t):
+    return compute_subscription_id(compute_resubscriptions(t))
 
-# %%
-subscriptions = compute_subscription_id(compute_resubscriptions(transactions))
+
+compute_subscriptions(example_transactions).execute()
+
 
 # %%
 assert (
@@ -191,7 +193,7 @@ subsample_by_unique(transactions, "msno", size=3).sort_by(
 
 # %%
 
-subsample_by_unique(subscriptions, "msno", size=3).sort_by(
+compute_subscriptions(subsample_by_unique(transactions, "msno", size=3)).sort_by(
     ["msno", "transaction_date", "membership_expire_date"]
 ).execute()
 
