@@ -15,7 +15,7 @@ def get_transactions_for(t, msno):
     )
 
 
-example_msno = "/h8eUI0wQO6rP77hNge2Atj2pXnqWtOmXigdZ1XGRrM="
+example_msno = "+8ZA0rcIhautWvUbAM58/4jZUvhNA4tWMZKhPFdfquQ="
 example_transactions = get_transactions_for(transactions, example_msno)
 
 # %%
@@ -68,19 +68,26 @@ assert (
 
 # %%
 r = compute_resubscriptions(transactions)
-resubscription_counts = (
-    r[r.resubscription].group_by(r.msno).count().sort_by(ibis.desc("count")).execute()
+resubscription_count = r.group_by(r.msno).aggregate(
+    resubscription_count=r.resubscription.sum(),
 )
-resubscription_counts.describe()
+
+resubscription_count.group_by("resubscription_count").aggregate(
+    member_count=resubscription_count.msno.count(),
+).execute()
 
 # %%
-resubscription_counts["count"].value_counts()
+resubscription_count.sort_by(
+    ibis.desc(resubscription_count.resubscription_count)
+).limit(10).execute()
 
 # %%
-resubscription_counts.sort_values("count", ascending=False).head(30)
+resubscription_count.filter(resubscription_count.resubscription_count == 4).limit(
+    10
+).execute()
 
 # %%
-example_msno = "XrhNRmtOoqYhDUQqeWshqeygVkQ4Sm6xuaF3bK42xuE="
+example_msno = "+8ZA0rcIhautWvUbAM58/4jZUvhNA4tWMZKhPFdfquQ="
 t = transactions[transactions.msno == example_msno]
 r = compute_resubscriptions(t)
 r.sort_by(r.transaction_date).execute()
@@ -109,9 +116,6 @@ def compute_current_subscription_init_date(t):
 
 
 compute_current_subscription_init_date(compute_resubscriptions(t)).execute()
-# %%
-# Find members with at least one cancellation event:
-transactions.filter(transactions.is_cancel)[["msno"]].distinct().limit(10).execute()
 
 # %%
 def transactions_for_member(t, msno):
@@ -157,12 +161,16 @@ def compute_subscription_id(t, relative_to_epoch=False, epoch=ibis.date(2000, 1,
     )
 
 
-def compute_subscriptions(t):
-    return compute_subscription_id(compute_resubscriptions(t))
+def compute_subscriptions(t, relative_to_epoch=False, epoch=ibis.date(2000, 1, 1)):
+    return compute_subscription_id(
+        compute_resubscriptions(t), relative_to_epoch=relative_to_epoch, epoch=epoch
+    )
 
 
 compute_subscriptions(example_transactions).execute()
 
+# %%
+compute_subscriptions(example_transactions, relative_to_epoch=True).execute()
 
 # %%
 assert (
@@ -196,5 +204,3 @@ subsample_by_unique(transactions, "msno", size=3).sort_by(
 compute_subscriptions(subsample_by_unique(transactions, "msno", size=3)).sort_by(
     ["msno", "transaction_date", "membership_expire_date"]
 ).execute()
-
-# %%
