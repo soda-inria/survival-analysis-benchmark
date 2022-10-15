@@ -9,10 +9,10 @@ transactions = connection.table("transactions")
 members = connection.table("members")
 user_logs = connection.table("user_logs")
 
-parquet_files = {"transactions": "transactions.parquet"}
+# parquet_files = {"transactions": "transactions.parquet"}
 # connection = ibis.datafusion.connect(parquet_files)
-connection = ibis.dask.connect(parquet_files)
-transactions = connection.table("transactions")
+# connection = ibis.dask.connect(parquet_files)
+# transactions = connection.table("transactions")
 
 # %%
 def get_transactions_for(t, msno):
