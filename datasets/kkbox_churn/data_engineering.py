@@ -1,12 +1,18 @@
 # %%
 from time import perf_counter
 import ibis
+# from kkbox_utils import table_schemas
 
 
 connection = ibis.duckdb.connect(database="kkbox.db")
 transactions = connection.table("transactions")
 members = connection.table("members")
 user_logs = connection.table("user_logs")
+
+parquet_files = {"transactions": "transactions.parquet"}
+# connection = ibis.datafusion.connect(parquet_files)
+connection = ibis.dask.connect(parquet_files)
+transactions = connection.table("transactions")
 
 # %%
 def get_transactions_for(t, msno):
@@ -17,6 +23,7 @@ def get_transactions_for(t, msno):
 
 example_msno = "+8ZA0rcIhautWvUbAM58/4jZUvhNA4tWMZKhPFdfquQ="
 example_transactions = get_transactions_for(transactions, example_msno)
+example_transactions.execute()
 
 # %%
 def compute_resubscriptions(t):
@@ -204,3 +211,5 @@ subsample_by_unique(transactions, "msno", size=3).sort_by(
 compute_subscriptions(subsample_by_unique(transactions, "msno", size=3)).sort_by(
     ["msno", "transaction_date", "membership_expire_date"]
 ).execute()
+
+# %%
