@@ -1,18 +1,18 @@
 # %%
 from time import perf_counter
 import ibis
-# from kkbox_utils import table_schemas
+import dask.dataframe as dd
 
+connection = ibis.duckdb.connect(database="kkbox.db", read_only=True)
 
-connection = ibis.duckdb.connect(database="kkbox.db")
+parquet_files = {"transactions": "transactions.parquet"}
+connection = ibis.dask.connect(
+    {k: dd.read_parquet(v) for k, v in parquet_files.items()}
+)
+
 transactions = connection.table("transactions")
-members = connection.table("members")
-user_logs = connection.table("user_logs")
-
-# parquet_files = {"transactions": "transactions.parquet"}
-# connection = ibis.datafusion.connect(parquet_files)
-# connection = ibis.dask.connect(parquet_files)
-# transactions = connection.table("transactions")
+# members = connection.table("members")
+# user_logs = connection.table("user_logs")
 
 # %%
 def get_transactions_for(t, msno):
@@ -43,16 +43,16 @@ def compute_resubscriptions(t):
     Note: this strategy to detect resubscriptions is simplistic because it does
     not handle cancellation events.
     """
-    w = ibis.window(
+    w = ibis.trailing_window(
         group_by=t.msno,
         order_by=[t.transaction_date, t.membership_expire_date],
         preceding=1,
-        following=0,
     )
-    previous_deadline_date = ibis.greatest(
-        t.membership_expire_date.first().over(w) + ibis.interval(days=30),
-        t.transaction_date.first().over(w) + ibis.interval(days=60),
-    )
+    # previous_deadline_date = ibis.greatest(
+    #     t.membership_expire_date.first().over(w) + ibis.interval(days=30),
+    #     t.transaction_date.first().over(w) + ibis.interval(days=60),
+    # )
+    previous_deadline_date = t.transaction_date.first().over(w) + ibis.interval(days=60)
     current_transaction_date = t.transaction_date.last().over(w)
     resubscription = current_transaction_date > previous_deadline_date
     return t.mutate(
@@ -148,11 +148,9 @@ def compute_subscription_id(t, relative_to_epoch=False, epoch=ibis.date(2000, 1,
     The subscription id is based on the cumulative sum of past resubscription
     events.
     """
-    w = ibis.window(
+    w = ibis.trailing_window(
         group_by=t.msno,
         order_by=[t.transaction_date, t.membership_expire_date],
-        preceding=None,  # all previous transactions
-        following=0,
     )
     if relative_to_epoch:
         # use oldest transaction date as reference to make it possible
