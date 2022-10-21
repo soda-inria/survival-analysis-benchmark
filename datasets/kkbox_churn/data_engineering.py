@@ -5,10 +5,10 @@ import dask.dataframe as dd
 
 connection = ibis.duckdb.connect(database="kkbox.db", read_only=True)
 
-parquet_files = {"transactions": "transactions.parquet"}
-connection = ibis.dask.connect(
-    {k: dd.read_parquet(v) for k, v in parquet_files.items()}
-)
+# parquet_files = {"transactions": "transactions.parquet"}
+# connection = ibis.dask.connect(
+#     {k: dd.read_parquet(v) for k, v in parquet_files.items()}
+# )
 
 transactions = connection.table("transactions")
 # members = connection.table("members")
@@ -16,7 +16,7 @@ transactions = connection.table("transactions")
 
 # %%
 def get_transactions_for(t, msno):
-    return t.filter(t.msno == msno).sort_by(
+    return t.filter(t.msno == msno).order_by(
         [t.transaction_date, t.membership_expire_date]
     )
 
@@ -84,7 +84,7 @@ resubscription_count.group_by("resubscription_count").aggregate(
 ).execute()
 
 # %%
-resubscription_count.sort_by(
+resubscription_count.order_by(
     ibis.desc(resubscription_count.resubscription_count)
 ).limit(10).execute()
 
@@ -97,7 +97,7 @@ resubscription_count.filter(resubscription_count.resubscription_count == 4).limi
 example_msno = "+8ZA0rcIhautWvUbAM58/4jZUvhNA4tWMZKhPFdfquQ="
 t = transactions[transactions.msno == example_msno]
 r = compute_resubscriptions(t)
-r.sort_by(r.transaction_date).execute()
+r.order_by(r.transaction_date).execute()
 
 # %%
 def compute_first_transaction_date(t):
@@ -126,7 +126,7 @@ compute_current_subscription_init_date(compute_resubscriptions(t)).execute()
 
 # %%
 def transactions_for_member(t, msno):
-    return t.filter(t.msno == msno).sort_by(
+    return t.filter(t.msno == msno).order_by(
         [t.transaction_date, t.membership_expire_date]
     )
 
@@ -200,13 +200,13 @@ def subsample_by_unique(t, col_name="msno", size=1, seed=None):
     return t.inner_join(selected_rows, col_name, suffixes=["", "_"])[t.columns]
 
 
-subsample_by_unique(transactions, "msno", size=3).sort_by(
+subsample_by_unique(transactions, "msno", size=3).order_by(
     ["msno", "transaction_date", "membership_expire_date"]
 ).execute()
 
 # %%
 
-compute_subscriptions(subsample_by_unique(transactions, "msno", size=3)).sort_by(
+compute_subscriptions(subsample_by_unique(transactions, "msno", size=3)).order_by(
     ["msno", "transaction_date", "membership_expire_date"]
 ).execute()
 
