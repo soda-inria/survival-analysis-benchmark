@@ -1,5 +1,5 @@
 # %%
-from time import perf_counter
+import numpy as np
 import ibis
 from ibis import _ as 𓅠  # to avoid name confict with Jupyter's _
 
@@ -16,16 +16,6 @@ transactions = connection.table("transactions")
 # members = connection.table("members")
 # user_logs = connection.table("user_logs")
 
-# %%
-def get_transactions_for(t, msno):
-    return t.filter(t.msno == msno).order_by(
-        [t.transaction_date, t.membership_expire_date]
-    )
-
-
-example_msno = "+8ZA0rcIhautWvUbAM58/4jZUvhNA4tWMZKhPFdfquQ="
-example_transactions = get_transactions_for(transactions, example_msno)
-example_transactions.execute()
 
 # %%
 def add_resubscription(
@@ -69,9 +59,6 @@ def add_resubscription(
 
 
 # %%
-example_transactions.execute()
-
-# %%
 def count_resubscriptions(expr):
     return expr.group_by(𓅠.msno).aggregate(
         n_resubscriptions=𓅠.resubscription.sum(),
@@ -92,7 +79,7 @@ def count_resubscriptions(expr):
     transactions.pipe(add_resubscription)
     .pipe(count_resubscriptions)
     # XXX: does not work with ibis.desc(𓅠.n_resubscriptions)
-    .order_by(ibis.desc("n_resubscriptions"))
+    .order_by([ibis.desc("n_resubscriptions"), "msno"])
     .limit(10)
 ).execute()
 
@@ -148,14 +135,12 @@ example_msno = "AHDfgFvwL4roCSwVdCbzjUfgUuibJHeMMl2Nx0UDdjI="
     .pipe(add_resubscription)
     .pipe(add_n_resubscriptions)
     .pipe(add_subscription_id)
+    .order_by([𓅠.transaction_date, 𓅠.membership_expire_date])
 ).execute()
 
 # %%
-import numpy as np
-
-
-def subsample_by_unique(t, col_name="msno", size=1, seed=None):
-    unique_col = t[[col_name]].distinct()
+def subsample_by_unique(expr, col_name="msno", size=1, seed=None):
+    unique_col = expr[[col_name]].distinct()
     num_unique = unique_col.count().execute()
     assert size <= num_unique
     positional_values = unique_col.order_by(col_name)[
@@ -167,7 +152,7 @@ def subsample_by_unique(t, col_name="msno", size=1, seed=None):
     selected_rows = positional_values.filter(
         positional_values.seq_id.isin(selected_indices)
     )[[col_name]]
-    return t.inner_join(selected_rows, col_name, suffixes=["", "_"]).select(t)
+    return expr.inner_join(selected_rows, col_name, suffixes=["", "_"]).select(expr)
 
 
 # %%
@@ -175,7 +160,7 @@ def subsample_by_unique(t, col_name="msno", size=1, seed=None):
     transactions.pipe(subsample_by_unique, "msno", size=3, seed=0)
     .pipe(add_resubscription)
     .pipe(add_subscription_id)
-    .order_by(["msno", "transaction_date", "membership_expire_date"])
+    .order_by([𓅠.msno, 𓅠.transaction_date, 𓅠.membership_expire_date])
 ).execute()
 
 # %%
@@ -183,7 +168,7 @@ def subsample_by_unique(t, col_name="msno", size=1, seed=None):
     transactions.pipe(subsample_by_unique, "msno", size=3, seed=0)
     .pipe(add_resubscription)
     .pipe(add_subscription_id)
-    .order_by(["msno", "transaction_date", "membership_expire_date"])
+    .order_by([𓅠.msno, 𓅠.transaction_date, 𓅠.membership_expire_date])
 ).execute()
 
 # %%
@@ -192,7 +177,7 @@ def subsample_by_unique(t, col_name="msno", size=1, seed=None):
     .pipe(add_resubscription)
     .pipe(add_n_resubscriptions)
     .pipe(add_subscription_id)
-    .order_by(["msno", "transaction_date", "membership_expire_date"])
+    .order_by([𓅠.msno, 𓅠.transaction_date, 𓅠.membership_expire_date])
 ).execute()
 
 # %%
