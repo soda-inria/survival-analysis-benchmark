@@ -1,7 +1,9 @@
 # %%
 from time import perf_counter
 import ibis
-import dask.dataframe as dd
+from ibis import _ as 𓅠  # to avoid name confict with Jupyter's _
+
+# import dask.dataframe as dd
 
 connection = ibis.duckdb.connect(database="kkbox.db", read_only=True)
 
@@ -26,7 +28,11 @@ example_transactions = get_transactions_for(transactions, example_msno)
 example_transactions.execute()
 
 # %%
-def compute_resubscriptions(t):
+def add_resubscription(
+    transactions,
+    expire_threshold=ibis.interval(days=30),
+    transaction_threshold=ibis.interval(days=60),
+):
     """Flag transactions that are resubscriptions.
 
     Compute the numbers of days elapsed between a given transaction and a
@@ -44,18 +50,17 @@ def compute_resubscriptions(t):
     not handle cancellation events.
     """
     w = ibis.trailing_window(
-        group_by=t.msno,
-        order_by=[t.transaction_date, t.membership_expire_date],
+        group_by=𓅠.msno,
+        order_by=[𓅠.transaction_date, 𓅠.membership_expire_date],
         preceding=1,
     )
-    # previous_deadline_date = ibis.greatest(
-    #     t.membership_expire_date.first().over(w) + ibis.interval(days=30),
-    #     t.transaction_date.first().over(w) + ibis.interval(days=60),
-    # )
-    previous_deadline_date = t.transaction_date.first().over(w) + ibis.interval(days=60)
-    current_transaction_date = t.transaction_date.last().over(w)
+    previous_deadline_date = ibis.greatest(
+        𓅠.membership_expire_date.first().over(w) + expire_threshold,
+        𓅠.transaction_date.first().over(w) + transaction_threshold,
+    )
+    current_transaction_date = 𓅠.transaction_date.last().over(w)
     resubscription = current_transaction_date > previous_deadline_date
-    return t.mutate(
+    return transactions.mutate(
         elapsed_days_since_previous_deadline=ibis.greatest(
             current_transaction_date - previous_deadline_date, 0
         ),
@@ -64,124 +69,87 @@ def compute_resubscriptions(t):
 
 
 # %%
-compute_resubscriptions(example_transactions).execute()
+example_transactions.execute()
 
 # %%
-# Check that we do not change the number of rows by mistake
-assert (
-    compute_resubscriptions(transactions).count().execute()
-    == transactions.count().execute()
-)
+def count_resubscriptions(expr):
+    return expr.group_by(𓅠.msno).aggregate(
+        n_resubscriptions=𓅠.resubscription.sum(),
+    )
 
-# %%
-r = compute_resubscriptions(transactions)
-resubscription_count = r.group_by(r.msno).aggregate(
-    resubscription_count=r.resubscription.sum(),
-)
 
-resubscription_count.group_by("resubscription_count").aggregate(
-    member_count=resubscription_count.msno.count(),
+(
+    transactions.pipe(add_resubscription)
+    .pipe(count_resubscriptions)
+    .group_by("n_resubscriptions")
+    .aggregate(
+        n_members=𓅠.msno.count(),
+    )
 ).execute()
 
 # %%
-resubscription_count.order_by(
-    ibis.desc(resubscription_count.resubscription_count)
-).limit(10).execute()
+(
+    transactions.pipe(add_resubscription)
+    .pipe(count_resubscriptions)
+    # XXX: does not work with ibis.desc(𓅠.n_resubscriptions)
+    .order_by(ibis.desc("n_resubscriptions"))
+    .limit(10)
+).execute()
 
 # %%
-resubscription_count.filter(resubscription_count.resubscription_count == 4).limit(
-    10
-).execute()
+def add_n_resubscriptions(expr):
+    counted = expr.pipe(count_resubscriptions)
+    return expr.left_join(counted, expr.msno == counted.msno).select(
+        expr, counted.n_resubscriptions
+    )
+
 
 # %%
 example_msno = "+8ZA0rcIhautWvUbAM58/4jZUvhNA4tWMZKhPFdfquQ="
-t = transactions[transactions.msno == example_msno]
-r = compute_resubscriptions(t)
-r.order_by(r.transaction_date).execute()
-
-# %%
-def compute_first_transaction_date(t):
-    return t.group_by("msno").aggregate(
-        reg_init_date=t.transaction_date.min(),
-    )
-
-
-first_t = compute_first_transaction_date(t)
-t.left_join(first_t, t.msno == first_t.msno).execute()
-
-# %%
-def compute_current_subscription_init_date(t):
-    w = ibis.window(
-        group_by="msno", order_by="transaction_date", preceding=1, following=0
-    )
-    current_subscription_init_date = t.resubscription.ifelse(
-        t.transaction_date.last().over(w),
-        ibis.NA,
-    )
-    t = t.mutate(current_subscription_init_date=current_subscription_init_date)
-    return t
-
-
-compute_current_subscription_init_date(compute_resubscriptions(t)).execute()
-
-# %%
-def transactions_for_member(t, msno):
-    return t.filter(t.msno == msno).order_by(
-        [t.transaction_date, t.membership_expire_date]
-    )
-
-
-# %%
-transactions_for_member(
-    transactions, "Z5bM5ILk0gU0IA/5ys+47rAFOahH55sRtE6oLfMo4q4="
+(
+    transactions.filter(𓅠.msno == example_msno)
+    .pipe(add_resubscription)
+    .pipe(add_n_resubscriptions)
+    .order_by([𓅠.transaction_date, 𓅠.membership_expire_date])
 ).execute()
 
-# %%
-# TODO: investigate why the following is broken
-# r = compute_resubscriptions(transactions)
-# transactions_for_member(r, "Z5bM5ILk0gU0IA/5ys+47rAFOahH55sRtE6oLfMo4q4=").execute()
 
 # %%
-def compute_subscription_id(t, relative_to_epoch=False, epoch=ibis.date(2000, 1, 1)):
+def add_subscription_id(expr, relative_to_epoch=False, epoch=ibis.date(2000, 1, 1)):
     """Generate a distinct id for each subscription.
 
     The subscription id is based on the cumulative sum of past resubscription
     events.
     """
-    w = ibis.trailing_window(
-        group_by=t.msno,
-        order_by=[t.transaction_date, t.membership_expire_date],
+    w = ibis.window(
+        group_by=𓅠.msno,
+        order_by=[𓅠.transaction_date, 𓅠.membership_expire_date],
+        preceding=None,
+        following=0,
     )
     if relative_to_epoch:
         # use oldest transaction date as reference to make it possible
         # to generate a session id that can be computed in parallel
         # on partitions of the transaction logs.
-        base = (t.transaction_date.first().over(w) - epoch).cast("string")
-        counter = t.resubscription.sum().over(w).cast("string")
+        base = (𓅠.transaction_date.first().over(w) - epoch).cast("string")
+        counter = 𓅠.resubscription.sum().over(w).cast("string")
         subscription_id = base + "_" + counter
     else:
-        subscription_id = t.resubscription.sum().over(w).cast("string")
-    return t.mutate(
+        subscription_id = 𓅠.resubscription.sum().over(w).cast("string")
+    return expr.mutate(
         subscription_id=subscription_id,
     )
 
 
-def compute_subscriptions(t, relative_to_epoch=False, epoch=ibis.date(2000, 1, 1)):
-    return compute_subscription_id(
-        compute_resubscriptions(t), relative_to_epoch=relative_to_epoch, epoch=epoch
-    )
-
-
-compute_subscriptions(example_transactions).execute()
-
 # %%
-compute_subscriptions(example_transactions, relative_to_epoch=True).execute()
+example_msno = "AHDfgFvwL4roCSwVdCbzjUfgUuibJHeMMl2Nx0UDdjI="
+(
+    transactions.filter(𓅠.msno == example_msno)
+    .pipe(add_resubscription)
+    .pipe(add_n_resubscriptions)
+    .pipe(add_subscription_id)
+).execute()
 
-# %%
-assert (
-    compute_subscription_id(compute_resubscriptions(transactions)).count().execute()
-    == transactions.count().execute()
-)
 # %%
 import numpy as np
 
@@ -190,24 +158,41 @@ def subsample_by_unique(t, col_name="msno", size=1, seed=None):
     unique_col = t[[col_name]].distinct()
     num_unique = unique_col.count().execute()
     assert size <= num_unique
-    positional_values = unique_col[ibis.row_number().name("seq_id"), col_name]
+    positional_values = unique_col.order_by(col_name)[
+        ibis.row_number().name("seq_id"), col_name
+    ]
     selected_indices = np.random.RandomState(seed).choice(
         num_unique, size=size, replace=False
     )
     selected_rows = positional_values.filter(
         positional_values.seq_id.isin(selected_indices)
     )[[col_name]]
-    return t.inner_join(selected_rows, col_name, suffixes=["", "_"])[t.columns]
+    return t.inner_join(selected_rows, col_name, suffixes=["", "_"]).select(t)
 
 
-subsample_by_unique(transactions, "msno", size=3).order_by(
-    ["msno", "transaction_date", "membership_expire_date"]
+# %%
+(
+    transactions.pipe(subsample_by_unique, "msno", size=3, seed=0)
+    .pipe(add_resubscription)
+    .pipe(add_subscription_id)
+    .order_by(["msno", "transaction_date", "membership_expire_date"])
 ).execute()
 
 # %%
+(
+    transactions.pipe(subsample_by_unique, "msno", size=3, seed=0)
+    .pipe(add_resubscription)
+    .pipe(add_subscription_id)
+    .order_by(["msno", "transaction_date", "membership_expire_date"])
+).execute()
 
-compute_subscriptions(subsample_by_unique(transactions, "msno", size=3)).order_by(
-    ["msno", "transaction_date", "membership_expire_date"]
+# %%
+(
+    transactions.pipe(subsample_by_unique, "msno", size=3, seed=0)
+    .pipe(add_resubscription)
+    .pipe(add_n_resubscriptions)
+    .pipe(add_subscription_id)
+    .order_by(["msno", "transaction_date", "membership_expire_date"])
 ).execute()
 
 # %%
