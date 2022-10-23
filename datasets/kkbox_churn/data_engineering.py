@@ -233,8 +233,39 @@ bench_sessionization(duckdb_parquet_conn)
 # %%
 # XXX: polars does not support window functions
 # OperationNotDefinedError: No translation rule for <class 'ibis.expr.operations.analytic.Window'>
-# polas_conn = ibis.polars.connect()
+# polars_conn = ibis.polars.connect()
 # for table_name, path in parquet_files.items():
-#     polas_conn.register_parquet(name=table_name, path=path)
+#     polars_conn.register_parquet(name=table_name, path=path)
 
-# bench_sessionization(polas_conn)
+# bench_sessionization(polars_conn)
+
+# %%
+# Note: to use clickhouse, one needs to first start the server with `clickhouse serve`.
+
+# XXX: the following raises NotImplementedError..., too bad.
+# clickhouse_conn.create_table("transactions", pd.read_parquet("transactions.parquet"))
+
+# %%
+# clickhouse_conn.raw_sql("DROP TABLE transactions")
+# CREATE_QUERY = """\
+# CREATE TABLE transactions
+# (
+#     `msno` String,
+#     `payment_method_id` Int8,
+#     `payment_plan_days` Int16,
+#     `plan_list_price` Int16,
+#     `actual_amount_paid` Int16,
+#     `is_auto_renew` Int8,
+#     `transaction_date` Date,
+#     `membership_expire_date` Date,
+#     `is_cancel` Int8
+# )
+# ENGINE = MergeTree
+# PARTITION BY toYYYYMM(transaction_date)
+# ORDER BY (msno, transaction_date, membership_expire_date)
+# """
+# clickhouse_conn.raw_sql(CREATE_QUERY)
+# !cat "transactions.parquet" | clickhouse client --query="INSERT INTO transactions FORMAT Parquet"
+# %%
+clickhouse_conn = ibis.clickhouse.connect()
+bench_sessionization(clickhouse_conn)
