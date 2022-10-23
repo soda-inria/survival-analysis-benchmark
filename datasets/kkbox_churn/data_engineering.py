@@ -3,19 +3,9 @@ import numpy as np
 import ibis
 from ibis import _ as 𓅠  # to avoid name confict with Jupyter's _
 
-# import dask.dataframe as dd
 
-connection = ibis.duckdb.connect(database="kkbox.db", read_only=True)
-
-# parquet_files = {"transactions": "transactions.parquet"}
-# connection = ibis.dask.connect(
-#     {k: dd.read_parquet(v) for k, v in parquet_files.items()}
-# )
-
-transactions = connection.table("transactions")
-# members = connection.table("members")
-# user_logs = connection.table("user_logs")
-
+duckdb_conn = ibis.duckdb.connect(database="kkbox.db", read_only=True)
+transactions = duckdb_conn.table("transactions")
 
 # %%
 def add_resubscription(
@@ -79,6 +69,7 @@ def count_resubscriptions(expr):
     transactions.pipe(add_resubscription)
     .pipe(count_resubscriptions)
     # XXX: does not work with ibis.desc(𓅠.n_resubscriptions)
+    # https://github.com/ibis-project/ibis/issues/4705
     .order_by([ibis.desc("n_resubscriptions"), "msno"])
     .limit(10)
 ).execute()
@@ -181,3 +172,69 @@ def subsample_by_unique(expr, col_name="msno", size=1, seed=None):
 ).execute()
 
 # %%
+from time import perf_counter
+
+
+def bench_sessionization(conn):
+    tic = perf_counter()
+    results = (
+        conn.table("transactions")
+        .pipe(add_resubscription)
+        .pipe(add_n_resubscriptions)
+        .pipe(add_subscription_id)
+        .order_by([ibis.desc("transaction_date"), ibis.desc("membership_expire_date")])
+        .select("msno", "subscription_id", "n_resubscriptions", "transaction_date")
+    ).limit(10).execute()
+    toc = perf_counter()
+    print(f"Sessionization took {toc - tic:.1f} seconds")
+    print(results)
+
+bench_sessionization(duckdb_conn)
+
+# %%
+parquet_files = {"transactions": "transactions.parquet"}
+
+# %%
+duckdb_parquet_conn = ibis.duckdb.connect()
+for table_name, path in parquet_files.items():
+    duckdb_parquet_conn.register(path, table_name)
+
+bench_sessionization(duckdb_parquet_conn)
+
+# %%
+# XXX: pandas window functions are not trustworthy
+# ValueError: Can only compare identically-labeled Series objects
+# might or not be related to:
+# https://github.com/ibis-project/ibis/issues/4676
+# import pandas as pd
+
+# pandas_conn = ibis.pandas.connect(
+#     {k: pd.read_parquet(v) for k, v in parquet_files.items()}
+# )
+# bench_sessionization(pandas_conn)
+
+# %%
+# XXX: dask does not support window functions
+# NotImplementedError: Window operations are unsupported in the dask backend
+
+# import dask.dataframe as dd
+# dask_conn = ibis.dask.connect(
+#     {k: dd.read_parquet(v) for k, v in parquet_files.items()}
+# )
+# bench_sessionization(dask_conn)
+
+# %%
+# XXX: datafusion does not support left joins?
+# OperationNotDefinedError: No translation rule for <class 'ibis.expr.operations.relations.LeftJoin'>
+
+# datafusion_conn = ibis.datafusion.connect(parquet_files )
+# bench_sessionization(datafusion_conn)
+
+# %%
+# XXX: polars does not support window functions
+# OperationNotDefinedError: No translation rule for <class 'ibis.expr.operations.analytic.Window'>
+# polas_conn = ibis.polars.connect()
+# for table_name, path in parquet_files.items():
+#     polas_conn.register_parquet(name=table_name, path=path)
+
+# bench_sessionization(polas_conn)
