@@ -234,10 +234,10 @@ bench_sessionization(duckdb_parquet_conn)
 # bench_sessionization(polars_conn)
 
 # %%
-# Note: to use clickhouse, one needs to first start the server with `clickhouse serve`.
+# Note: to use clickhouse, one needs to first start the server with `clickhouse server`.
 
 # XXX: the following raises NotImplementedError..., too bad.
-# clickhouse_conn.create_table("transactions", pd.read_parquet("transactions.parquet"))
+# ibis.clickhouse.connect().create_table("transactions", pd.read_parquet("transactions.parquet"))
 
 # %%
 # clickhouse_conn.raw_sql("DROP TABLE transactions")
