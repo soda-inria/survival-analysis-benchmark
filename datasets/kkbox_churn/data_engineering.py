@@ -150,14 +150,7 @@ def subsample_by_unique(expr, col_name="msno", size=1, seed=None):
 (
     transactions.pipe(subsample_by_unique, "msno", size=3, seed=0)
     .pipe(add_resubscription)
-    .pipe(add_subscription_id)
-    .order_by([𓅠.msno, 𓅠.transaction_date, 𓅠.membership_expire_date])
-).execute()
-
-# %%
-(
-    transactions.pipe(subsample_by_unique, "msno", size=3, seed=0)
-    .pipe(add_resubscription)
+    .pipe(add_n_resubscriptions)
     .pipe(add_subscription_id)
     .order_by([𓅠.msno, 𓅠.transaction_date, 𓅠.membership_expire_date])
 ).execute()
@@ -170,6 +163,7 @@ def subsample_by_unique(expr, col_name="msno", size=1, seed=None):
     .pipe(add_subscription_id)
     .order_by([𓅠.msno, 𓅠.transaction_date, 𓅠.membership_expire_date])
 ).execute()
+
 
 # %%
 from time import perf_counter
@@ -269,3 +263,5 @@ bench_sessionization(duckdb_parquet_conn)
 # %%
 clickhouse_conn = ibis.clickhouse.connect()
 bench_sessionization(clickhouse_conn)
+
+# %%
