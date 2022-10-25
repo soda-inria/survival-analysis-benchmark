@@ -8,7 +8,7 @@ duckdb_conn = ibis.duckdb.connect(database="kkbox.db", read_only=True)
 transactions = duckdb_conn.table("transactions")
 
 # %%
-def add_resubscription(
+def add_resubscription_window(
     transactions,
     expire_threshold=ibis.interval(days=30),
     transaction_threshold=ibis.interval(days=60),
@@ -48,42 +48,141 @@ def add_resubscription(
     )
 
 
-# %%
-def count_resubscriptions(expr):
-    return expr.group_by(𓅠.msno).aggregate(
-        n_resubscriptions=𓅠.resubscription.sum(),
+#%%
+
+
+def add_resubscription_groupby_lag(
+    transactions,
+    expire_threshold=ibis.interval(days=30),
+    transaction_threshold=ibis.interval(days=60),
+):
+    """Flag transactions that are resubscriptions.
+
+    Compute the numbers of days elapsed between a given transaction and a
+    deadline computed from the informations in the previous transaction by the
+    same member.
+
+    The new resubscription deadline is set to 30 days after the expiration date
+    of the previous transaction or 60 days after the date of the previous
+    transaction, which ever is the latest. We need this double criterion
+    because some expiration dates seems invalid (too short) and would cause the
+    detection of too many registration events, even for users which have more
+    than one transaction per month for several contiguous months.
+
+    Note: this strategy to detect resubscriptions is simplistic because it does
+    not handle cancellation events.
+    """
+    t = transactions
+    return (
+        t.group_by(t.msno)
+        .order_by([t.transaction_date, t.membership_expire_date])
+        # XXX: we have to assign the lag variable as expression fields
+        # otherwise we can get a CatalogException from duckdb...
+        # Similar constraints for
+        .mutate(
+            transaction_lag=𓅠.transaction_date.lag(),
+            expire_lag=𓅠.membership_expire_date.lag(),
+        )
+        .mutate(
+            transaction_deadline=ibis.coalesce(𓅠.transaction_lag, 𓅠.transaction_date)
+            + transaction_threshold,
+            expire_deadline=ibis.coalesce(𓅠.expire_lag, 𓅠.membership_expire_date)
+            + expire_threshold,
+        )
+        .mutate(
+            previous_deadline_date=ibis.greatest(
+                𓅠.transaction_deadline,
+                𓅠.expire_deadline,
+            )
+        )
+        .mutate(
+            elapsed_days_since_previous_deadline=ibis.greatest(
+                𓅠.transaction_date - 𓅠.previous_deadline_date, 0
+            ),
+            resubscription=t.transaction_date > 𓅠.previous_deadline_date,
+        )
+        .drop(
+            "transaction_lag",
+            "expire_lag",
+            "transaction_deadline",
+            "expire_deadline",
+            "previous_deadline_date",
+        )
     )
 
 
+# %%
+example_msno = "+8ZA0rcIhautWvUbAM58/4jZUvhNA4tWMZKhPFdfquQ="
 (
-    transactions.pipe(add_resubscription)
+    transactions.filter(𓅠.msno == example_msno)
+    .pipe(add_resubscription_groupby_lag)
+    .order_by([𓅠.msno, 𓅠.transaction_date, 𓅠.membership_expire_date])
+).execute()
+
+# %%
+(
+    transactions.filter(𓅠.msno == example_msno)
+    .pipe(add_resubscription_window)
+    .order_by([𓅠.msno, 𓅠.transaction_date, 𓅠.membership_expire_date])
+).execute()
+
+# %%
+def count_resubscriptions(expr):
+    return expr.group_by(expr.msno).aggregate(
+        n_resubscriptions=expr.resubscription.sum(),
+    )
+
+
+# %%
+counts_groupby_lag = (
+    transactions.pipe(add_resubscription_groupby_lag)
     .pipe(count_resubscriptions)
     .group_by("n_resubscriptions")
     .aggregate(
         n_members=𓅠.msno.count(),
     )
 ).execute()
+counts_groupby_lag
+
+# %%
+counts_window = (
+    transactions.pipe(add_resubscription_window)
+    .pipe(count_resubscriptions)
+    .group_by("n_resubscriptions")
+    .aggregate(
+        n_members=𓅠.msno.count(),
+    )
+).execute()
+counts_window
+
+# %%
+assert (counts_window == counts_groupby_lag).all().all()
+
+# %%
+# Both methods return the same results on duckdb and take the same
+# time. From now one use the group_by + lag variant since not
+# all the backends support the generic Window Function API
+# add_resubscription = add_resubscription_window
+add_resubscription = add_resubscription_groupby_lag
+
 
 # %%
 (
     transactions.pipe(add_resubscription)
     .pipe(count_resubscriptions)
-    # XXX: does not work with ibis.desc(𓅠.n_resubscriptions)
-    # https://github.com/ibis-project/ibis/issues/4705
-    .order_by([ibis.desc("n_resubscriptions"), "msno"])
+    .order_by([𓅠.n_resubscriptions.desc(), 𓅠.msno])
     .limit(10)
 ).execute()
 
 # %%
 def add_n_resubscriptions(expr):
-    counted = expr.pipe(count_resubscriptions)
-    return expr.left_join(counted, expr.msno == counted.msno).select(
-        expr, counted.n_resubscriptions
+    return expr.group_by(expr.msno).mutate(
+        n_resubscriptions=𓅠.resubscription.sum(),
     )
 
 
 # %%
-example_msno = "+8ZA0rcIhautWvUbAM58/4jZUvhNA4tWMZKhPFdfquQ="
+example_msno = "AHDfgFvwL4roCSwVdCbzjUfgUuibJHeMMl2Nx0UDdjI="
 (
     transactions.filter(𓅠.msno == example_msno)
     .pipe(add_resubscription)
@@ -93,7 +192,9 @@ example_msno = "+8ZA0rcIhautWvUbAM58/4jZUvhNA4tWMZKhPFdfquQ="
 
 
 # %%
-def add_subscription_id(expr, relative_to_epoch=False, epoch=ibis.date(2000, 1, 1)):
+def add_subscription_id_window(
+    expr, relative_to_epoch=False, epoch=ibis.date(2000, 1, 1)
+):
     """Generate a distinct id for each subscription.
 
     The subscription id is based on the cumulative sum of past resubscription
@@ -118,6 +219,25 @@ def add_subscription_id(expr, relative_to_epoch=False, epoch=ibis.date(2000, 1, 
         subscription_id=subscription_id,
     )
 
+
+# %%
+def add_subscription_groupby_cumsum(expr):
+    """Generate a distinct id for each subscription.
+
+    The subscription id is based on the cumulative sum of past resubscription
+    events.
+    """
+    return (
+        expr.group_by(𓅠.msno)
+        .order_by([𓅠.transaction_date, 𓅠.membership_expire_date])
+        .mutate(
+            subscription_id=𓅠.resubscription.cast("int").cumsum().cast("string"),
+        )
+    )
+
+
+# %%
+add_subscription_id = add_subscription_groupby_cumsum
 
 # %%
 example_msno = "AHDfgFvwL4roCSwVdCbzjUfgUuibJHeMMl2Nx0UDdjI="
@@ -172,16 +292,27 @@ from time import perf_counter
 def bench_sessionization(conn):
     tic = perf_counter()
     results = (
-        conn.table("transactions")
-        .pipe(add_resubscription)
-        .pipe(add_n_resubscriptions)
-        .pipe(add_subscription_id)
-        .order_by([ibis.desc("transaction_date"), ibis.desc("membership_expire_date")])
-        .select("msno", "subscription_id", "n_resubscriptions", "transaction_date")
-    ).limit(10).execute()
+        (
+            conn.table("transactions")
+            .pipe(add_resubscription)
+            .pipe(add_n_resubscriptions)
+            .pipe(add_subscription_id)
+            .order_by(
+                [
+                    ibis.desc("transaction_date"),
+                    ibis.desc("membership_expire_date"),
+                    "msno",
+                ]
+            )
+            .select("msno", "subscription_id", "n_resubscriptions", "transaction_date")
+        )
+        .limit(10)
+        .execute()
+    )
     toc = perf_counter()
     print(f"Sessionization took {toc - tic:.1f} seconds")
     print(results)
+
 
 bench_sessionization(duckdb_conn)
 
@@ -200,6 +331,10 @@ bench_sessionization(duckdb_parquet_conn)
 # ValueError: Can only compare identically-labeled Series objects
 # might or not be related to:
 # https://github.com/ibis-project/ibis/issues/4676
+
+# The lag / cumsum variants should be supported though, but it is
+# slow as there is no parallel computation with the pandas backend...
+
 # import pandas as pd
 
 # pandas_conn = ibis.pandas.connect(
@@ -210,6 +345,7 @@ bench_sessionization(duckdb_parquet_conn)
 # %%
 # XXX: dask does not support window functions
 # NotImplementedError: Window operations are unsupported in the dask backend
+# XXX: even the lag / cumsum variant raise NotImplementedError with dask
 
 # import dask.dataframe as dd
 # dask_conn = ibis.dask.connect(
@@ -217,16 +353,18 @@ bench_sessionization(duckdb_parquet_conn)
 # )
 # bench_sessionization(dask_conn)
 
-# %%
-# XXX: datafusion does not support left joins?
-# OperationNotDefinedError: No translation rule for <class 'ibis.expr.operations.relations.LeftJoin'>
-
-# datafusion_conn = ibis.datafusion.connect(parquet_files )
+# %% XXX: ibis' Arrow DataFusion backend does not translate Window ops, neight
+# with the generic Window API nor with the lag / cumsum variants:
+# OperationNotDefinedError: No translation rule for <class
+# 'ibis.expr.operations.analytic.Window'>
+# datafusion_conn = ibis.datafusion.connect(parquet_files)
 # bench_sessionization(datafusion_conn)
 
 # %%
 # XXX: polars does not support window functions
 # OperationNotDefinedError: No translation rule for <class 'ibis.expr.operations.analytic.Window'>
+
+# XXX: even for the lag / cumsum variant does not work...
 # polars_conn = ibis.polars.connect()
 # for table_name, path in parquet_files.items():
 #     polars_conn.register_parquet(name=table_name, path=path)
