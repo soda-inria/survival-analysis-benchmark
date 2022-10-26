@@ -77,8 +77,12 @@ def add_resubscription_groupby_lag(
         t.group_by(t.msno)
         .order_by([t.transaction_date, t.membership_expire_date])
         # XXX: we have to assign the lag variable as expression fields
-        # otherwise we can get a CatalogException from duckdb...
-        # Similar constraints for
+        # otherwise we can get a CatalogException from duckdb... There are
+        # similar constraints for subsequent operations in the chained calls to
+        # mutate.
+        #
+        # TODO: craft a minimal reproducible example and report it to the ibis
+        # issue tracker.
         .mutate(
             transaction_lag=𓅠.transaction_date.lag(),
             expire_lag=𓅠.membership_expire_date.lag(),
@@ -137,7 +141,7 @@ def count_resubscriptions(expr):
 counts_groupby_lag = (
     transactions.pipe(add_resubscription_groupby_lag)
     .pipe(count_resubscriptions)
-    .group_by("n_resubscriptions")
+    .group_by(𓅠.n_resubscriptions)
     .aggregate(
         n_members=𓅠.msno.count(),
     )
@@ -148,7 +152,7 @@ counts_groupby_lag
 counts_window = (
     transactions.pipe(add_resubscription_window)
     .pipe(count_resubscriptions)
-    .group_by("n_resubscriptions")
+    .group_by(𓅠.n_resubscriptions)
     .aggregate(
         n_members=𓅠.msno.count(),
     )
@@ -255,13 +259,13 @@ def subsample_by_unique(expr, col_name="msno", size=1, seed=None):
     num_unique = unique_col.count().execute()
     assert size <= num_unique
     positional_values = unique_col.order_by(col_name)[
-        ibis.row_number().name("seq_id"), col_name
+        ibis.row_number().name("position"), col_name
     ]
     selected_indices = np.random.RandomState(seed).choice(
         num_unique, size=size, replace=False
     )
     selected_rows = positional_values.filter(
-        positional_values.seq_id.isin(selected_indices)
+        positional_values.position.isin(selected_indices)
     )[[col_name]]
     return expr.inner_join(selected_rows, col_name, suffixes=["", "_"]).select(expr)
 
@@ -299,12 +303,12 @@ def bench_sessionization(conn):
             .pipe(add_subscription_id)
             .order_by(
                 [
-                    ibis.desc("transaction_date"),
-                    ibis.desc("membership_expire_date"),
-                    "msno",
+                    𓅠.transaction_date.desc(),
+                    𓅠.membership_expire_date,
+                    𓅠.msno,
                 ]
             )
-            .select("msno", "subscription_id", "n_resubscriptions", "transaction_date")
+            .select(𓅠.msno, 𓅠.subscription_id, 𓅠.n_resubscriptions, 𓅠.transaction_date)
         )
         .limit(10)
         .execute()
