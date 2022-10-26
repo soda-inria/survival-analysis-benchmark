@@ -21,14 +21,16 @@ def _map_leaves_to_km(leaves, y_train, time_bins):
         _y_train = y_train[mask_leaf]
         times, km = kaplan_meier_estimator(_y_train["event"], _y_train["duration"])
 
-        # build the grid by using the step function
+        # Build the grid by using the step function, remove user required time_bins
+        # that are out of train times interval.
         min_time, max_time = times[0], times[-1]
         mask_min_time = time_bins < min_time
         mask_max_time = time_bins > max_time
         mask_time = ~(mask_min_time | mask_max_time)
         km = StepFunction(times, km)(time_bins[mask_time])
 
-        # fill time values
+        # Fill the km array with its own min and max
+        # for the time_bins that we previously excluded.
         min_km, max_km = km[0], km[-1]
         n_min_val = sum(mask_min_time)
         n_max_val = sum(mask_max_time)
