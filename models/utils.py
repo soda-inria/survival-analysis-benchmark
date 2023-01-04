@@ -93,7 +93,7 @@ def run_cv(
     score_keys = [
         "ibs",
         "c_index",
-        "c_index_ipcw",
+        #"c_index_ipcw",
         "training_duration",
         "prediction_duration",
     ]
@@ -161,20 +161,21 @@ def get_times(y_train, y_val):
 def _handle_times(estimator, times, time_bins_kwargs, fit_kwargs):
     """Add the correct `times` parameter to `fit_kwargs`, if any is needed.
     """
-    if not isinstance(time_bins_kwargs, dict):
-        raise TypeError("`time_bins_kwargs` must be a dict.")
-    if estimator.__class__.__name__ == "Pipeline":
-        for model_name, arg in time_bins_kwargs.items():
-            fit_kwargs[f"{model_name}__{arg}"] = times
-        return fit_kwargs
+    if time_bins_kwargs:
+        if not isinstance(time_bins_kwargs, dict):
+            raise TypeError("`time_bins_kwargs` must be a dict.")
+        if estimator.__class__.__name__ == "Pipeline":
+            for model_name, arg in time_bins_kwargs.items():
+                fit_kwargs[f"{model_name}__{arg}"] = times
+            return fit_kwargs
 
-    if len(time_bins_kwargs) > 1:
-        raise ValueError(
-            "More than 1 element provided in time_bins_kwargs "
-            "for non-Pipeline estimator."
-        )
-    arg = list(time_bins_kwargs.values())[0]
-    fit_kwargs[arg] = times
+        if len(time_bins_kwargs) > 1:
+            raise ValueError(
+                "More than 1 element provided in time_bins_kwargs "
+                "for non-Pipeline estimator."
+            )
+        arg = list(time_bins_kwargs.values())[0]
+        fit_kwargs[arg] = times
 
     return fit_kwargs
 
@@ -233,7 +234,7 @@ def add_lines(result, model_name, lines):
     # take the mean for each folds, output shape: (times)
     brier_scores = np.asarray(result["brier_scores"]).mean(axis=0)
 
-    # ensure that all folds has the same size
+    # ensure that all folds have the same size
     N = min([len(el) for el in result["survival_probs"]])
     survival_probs = [el[:N] for el in result["survival_probs"]]
     
