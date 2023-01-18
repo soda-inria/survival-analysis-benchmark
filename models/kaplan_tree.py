@@ -44,19 +44,19 @@ def _map_leaves_to_km(leaves, y_train, time_bins):
 
 class KaplanTree(BaseEstimator, SurvivalMixin):
 
-    def fit(self, X, y=None, time_bins=None):
+    def fit(self, X, y=None, times=None):
         leaves = self._get_leaves(X)
-        self.leaf_to_km_ = _map_leaves_to_km(leaves, y, time_bins)
-        self.time_bins_ = time_bins
+        self.leaf_to_km_ = _map_leaves_to_km(leaves, y, times)
+        self.times_ = times
         return self
     
-    def predict_survival_function(self, X, return_array=False):
+    def predict_survival_function(self, X, times=None, return_array=True):
         check_is_fitted(self, "leaf_to_km_")
         x_leaves = self._get_leaves(X)
         survival_probs = np.vstack([self.leaf_to_km_[leaf] for leaf in x_leaves])
         if return_array:
             return survival_probs
-        return _array_to_step_function(self.time_bins_, survival_probs)
+        return _array_to_step_function(self.times_, survival_probs)
         
     def _get_leaves(self, X):
         target_type = type_of_target(X)

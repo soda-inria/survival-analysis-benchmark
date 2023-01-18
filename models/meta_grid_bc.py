@@ -3,6 +3,8 @@ from joblib import Parallel, delayed
 
 from sklearn.base import BaseEstimator, clone
 from sklearn.utils.validation import check_is_fitted
+from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
 
 from sksurv.tree.tree import _array_to_step_function
 
@@ -13,25 +15,25 @@ from .survival_mixin import SurvivalMixin
 
 
 class MetaGridBC(BaseEstimator, SurvivalMixin):
-    
-    def __init__(self, classifier, n_jobs=None, verbose=0): 
-        self.classifier = classifier
+    def __init__(self, classifier=None, n_jobs=None, verbose=0, name="MetaGridBC"):
+        self.classifier = classifier or LogisticRegression()
         self.n_jobs = n_jobs
         self.verbose = verbose
+        self.name = name
 
-    def fit(self, X_train, y_train=None, time_bins=None):
-        e_name, t_name = y_train.dtype.names
+    def fit(self, X, y, times=None):
+        e_name, t_name = y.dtype.names
         targets_train, _ = _build_multi_task_targets(
-            E=y_train[e_name],
-            T=y_train[t_name],
-            time_bins=time_bins,
+            E=y[e_name],
+            T=y[t_name],
+            time_bins=times,
         )
         with Parallel(n_jobs=self.n_jobs, verbose=self.verbose) as parallel:
             estimators = parallel(
-                delayed(self._fit_one_lr)(X_train, targets_train[:, i])
+                delayed(self._fit_one_lr)(X, targets_train[:, i])
                 for i in range(targets_train.shape[1])
             )
-        self.time_bins_ = time_bins
+        self.times_ = times
         self.estimators_ = estimators
         return self
 
@@ -49,8 +51,8 @@ class MetaGridBC(BaseEstimator, SurvivalMixin):
             classifier = clone(self.classifier)
         classifier.fit(X[mask, :], target[mask])
         return classifier
-    
-    def predict_survival_function(self, X, return_array=False):
+
+    def predict_survival_function(self, X, times=None, return_array=True):
         check_is_fitted(self, "estimators_")
         with Parallel(n_jobs=self.n_jobs) as parallel:
             y_preds = parallel(
@@ -61,10 +63,9 @@ class MetaGridBC(BaseEstimator, SurvivalMixin):
         survival_probs = np.cumprod(1 - y_preds, axis=0).T
         if return_array:
             return survival_probs
-        return _array_to_step_function(self.time_bins_, survival_probs)
-    
+        return _array_to_step_function(self.times_, survival_probs)
+
     def _predict_one_lr(self, X, estimator):
         y_pred = estimator.predict_proba(X)
         # return probability of "positive" event
         return y_pred[:, 1]
-    

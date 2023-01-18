@@ -21,12 +21,10 @@ def run_cv(
     X,
     y,
     estimator,
-    model_name,
-    score_func=None,
-    subset=None,
-    fit_kwargs=None,
-    time_bins_kwargs=None,
+    subsample_train=1,
+    subsample_val=0.05,
     cv=None,
+    single_fold=False,
 ):
     """Run cross validation and save score.
 
@@ -49,46 +47,43 @@ def run_cv(
         The number of first rows to select for keys 'train' and 'val'.
         If `subset` is not None, one value must be set for each key.
     """
-
-    score_func = score_func or get_scores
-    fit_kwargs = fit_kwargs or dict()
-    time_bins_kwargs = time_bins_kwargs or dict()
-
     cv_scores = defaultdict(list)
 
     cv = cv or KFold()
     for train_idxs, val_idxs in cv.split(X):
 
-        if subset:
-            n_train, n_val = len(train_idxs), len(val_idxs)
-
-            subset_train = int(subset.get("train", 1) * n_train)
+        if subsample_train:
+            n_train = len(train_idxs)
+            subset_train = int(subsample_train * n_train)
             train_idxs = train_idxs[:subset_train]
 
-            subset_val = int(subset.get("val", 1) * n_val)
+        if subsample_val:
+            n_val = len(val_idxs)
+            subset_val = int(subsample_val * n_val)
             val_idxs = val_idxs[:subset_val]
 
         print(f"train set: {len(train_idxs)}, val set: {len(val_idxs)}")
 
-        X_train, y_train = X.values[train_idxs, :], y[train_idxs]
-        X_val, y_val = X.values[val_idxs, :], y[val_idxs]
+        X_train, y_train, X_val, y_val = estimator.train_test_split(X, y, train_idxs, val_idxs)
 
         # Generate evaluation time steps as a subset of the train and val durations.
-        times = get_times(y_train, y_val)
-        # add the right parameter to handle `times`.
-        fit_kwargs = _handle_times(estimator, times, time_bins_kwargs, fit_kwargs)
+        times = get_time_grid(y_train, y_val)
 
         t0 = perf_counter()
-        estimator.fit(X_train, y_train, **fit_kwargs)
+        estimator.fit(X_train, y_train, times)
         t1 = perf_counter()
 
-        scores = score_func(estimator, y_train, X_val, y_val, times)
+        scores = get_scores(estimator, y_train, X_val, y_val, times)
 
         # Accumulate each score into a separate list.
         for k, v in scores.items():
             cv_scores[k].append(v)
         cv_scores["training_duration"].append(t1 - t0)
 
+        if single_fold:
+            break
+
+    print("-" * 8)
     # Compute each score mean and std
     score_keys = [
         "ibs",
@@ -106,22 +101,20 @@ def run_cv(
     cv_scores["n_sample_train"] = len(train_idxs)
     cv_scores["n_sample_val"] = len(val_idxs)
 
-    save_scores(model_name, cv_scores)
+    save_scores(estimator.name, cv_scores)
 
 
-def get_scores(model, y_train, X_test, y_test, times):
+def get_scores(estimator, y_train, X_val, y_val, times):
 
     t0 = perf_counter()
-    survival_probs = model.predict_survival_function(X_test, return_array=True)
+    survival_probs = estimator.predict_survival_function(X_val, times)
     t1 = perf_counter()
 
-    cumulative_hazards = model.predict_cumulative_hazard_function(
-        X_test, return_array=True
-    )
-    risk_estimate = cumulative_hazards.sum(axis=1)
+    risk_estimate = estimator.predict_risk_estimate(X_val, times)
+    y_train_arr, y_val_arr = estimator.prepare_y_scoring(y_train, y_val)
 
-    _, brier_scores = brier_score(y_train, y_test, survival_probs, times)
-    ibs = integrated_brier_score(y_train, y_test, survival_probs, times)
+    _, brier_scores = brier_score(y_train_arr, y_val_arr, survival_probs, times)
+    ibs = integrated_brier_score(y_train_arr, y_val_arr, survival_probs, times)
 
     # The AUC is very close to the IBS in this benchmark, so we don't compute it.
     # auc, mean_auc = cumulative_dynamic_auc(y_train, y_test, cumulative_hazards, times)
@@ -129,15 +122,15 @@ def get_scores(model, y_train, X_test, y_test, times):
     # As the C-index is expensive to compute, we only consider a subsample of our data. 
     N_sample_c_index = 50_000
     c_index = concordance_index_censored(
-        y_test["event"][:N_sample_c_index],
-        y_test["duration"][:N_sample_c_index],
+        y_val_arr["event"][:N_sample_c_index],
+        y_val_arr["duration"][:N_sample_c_index],
         risk_estimate[:N_sample_c_index],
     )[0]
-    c_index_ipcw = concordance_index_ipcw(
-        y_train[:N_sample_c_index],
-        y_test[:N_sample_c_index],
-        risk_estimate[:N_sample_c_index],
-    )[0]
+    # c_index_ipcw = concordance_index_ipcw(
+    #     y_train[:N_sample_c_index],
+    #     y_test[:N_sample_c_index],
+    #     risk_estimate[:N_sample_c_index],
+    # )[0]
 
     return dict(
         brier_scores=brier_scores,
@@ -147,37 +140,15 @@ def get_scores(model, y_train, X_test, y_test, times):
         # auc=auc,
         # mean_auc=mean_auc,
         c_index=c_index,
-        c_index_ipcw=c_index_ipcw,
+        # c_index_ipcw=c_index_ipcw,
         prediction_duration=t1 - t0,
     )
 
 
-def get_times(y_train, y_val):
+def get_time_grid(y_train, y_val, n=100):
     y_time = np.hstack([y_train["duration"], y_val["duration"]])
     lower, upper = np.percentile(y_time, [2.5, 97.5])
-    return np.linspace(lower, upper, 100)
-
-
-def _handle_times(estimator, times, time_bins_kwargs, fit_kwargs):
-    """Add the correct `times` parameter to `fit_kwargs`, if any is needed.
-    """
-    if time_bins_kwargs:
-        if not isinstance(time_bins_kwargs, dict):
-            raise TypeError("`time_bins_kwargs` must be a dict.")
-        if estimator.__class__.__name__ == "Pipeline":
-            for model_name, arg in time_bins_kwargs.items():
-                fit_kwargs[f"{model_name}__{arg}"] = times
-            return fit_kwargs
-
-        if len(time_bins_kwargs) > 1:
-            raise ValueError(
-                "More than 1 element provided in time_bins_kwargs "
-                "for non-Pipeline estimator."
-            )
-        arg = list(time_bins_kwargs.values())[0]
-        fit_kwargs[arg] = times
-
-    return fit_kwargs
+    return np.linspace(lower, upper, n)
 
 
 def save_scores(name, scores):
@@ -201,6 +172,7 @@ def get_all_results(match_filter: str = None):
     
     results_dir = Path(os.getenv("PYCOX_DATA_DIR")) / "kkbox_v1" / "results"
     lines, tables = [], []
+    match_filter = match_filter or ""
     
     for path in results_dir.iterdir():
         if (
@@ -234,12 +206,9 @@ def add_lines(result, model_name, lines):
     # take the mean for each folds, output shape: (times)
     brier_scores = np.asarray(result["brier_scores"]).mean(axis=0)
 
-    # ensure that all folds have the same size
-    N = min([len(el) for el in result["survival_probs"]])
-    survival_probs = [el[:N] for el in result["survival_probs"]]
-    
-    # take the mean for each individual across all folds, output shape: (N, times)
-    survival_probs = np.asarray(survival_probs).mean(axis=0)
+    # arbitrarily take the first cross val to vizualize surv probs
+    # output shape: (n_val, times)
+    survival_probs = np.asarray(result["survival_probs"][0])
     
     row = dict(
         model=model_name,
