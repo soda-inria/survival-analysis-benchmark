@@ -129,6 +129,9 @@ dmypy.json
 .pyre/
 
 # duckdb files
+*.duckdb
+*.duckdb.wal
+*.duckdb.tmp
 *.db
 *.db.wal
 *.db.tmp
@@ -136,3 +139,4 @@ dmypy.json
 # data
 *.7z
 *.csv
+*.parquet
