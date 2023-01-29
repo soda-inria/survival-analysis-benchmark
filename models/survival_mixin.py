@@ -5,10 +5,7 @@ from sksurv.tree.tree import _array_to_step_function
 class SurvivalMixin:
 
     def predict_cumulative_hazard_function(self, X_test, times):
-        if hasattr(self, "survival_probs_"):
-            survival_probs = self.survival_probs_
-        else:
-            survival_probs = self.predict_survival_function(X_test, times)
+        survival_probs = self.predict_survival_function(X_test, times)
         cumulative_hazards = -np.log(survival_probs + 1e-8)
         self.cumulative_hazards_ = cumulative_hazards 
         return cumulative_hazards
