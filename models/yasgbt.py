@@ -47,11 +47,13 @@ class DataSampler:
 
 class YASGBT(BaseEstimator, SurvivalMixin):
 
-    def __init__(self, n_iter=10, learning_rate=0.01):
+    name = "YASGBT"
+
+    def __init__(self, n_iter=10, learning_rate=0.01, verbose=False):
         self.n_iter = n_iter
         self.learning_rate = learning_rate
     
-    def fit(self, X, y):
+    def fit(self, X, y, times=None):
         
         # TODO: add check_X_y from sksurv
         monotonic_cst = np.zeros(X.shape[1]+1)
@@ -66,7 +68,11 @@ class YASGBT(BaseEstimator, SurvivalMixin):
 
         data_sampler = DataSampler(y)
         
-        for _ in tqdm(range(self.n_iter)):
+        iterator = range(self.n_iter)
+        if self.verbose:
+            iterator = tqdm(iterator)
+
+        for _ in iterator:
             times, yc, sample_weight = data_sampler.make_sample()
             Xt = np.hstack([times, X])
             hgbc.max_iter += 1
@@ -80,7 +86,12 @@ class YASGBT(BaseEstimator, SurvivalMixin):
     def predict_survival_function(self, X, times):
 
         all_y_probs = []
-        for t in tqdm(times):
+
+        iterator = range(times)
+        if self.verbose:
+            iterator = tqdm(iterator)
+
+        for t in iterator:
             t = np.full((X.shape[0], 1), t)
             Xt = np.hstack([t, X])
             y_probs = self.hgbc_.predict(Xt)
