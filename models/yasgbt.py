@@ -52,12 +52,14 @@ class YASGBT(BaseEstimator, SurvivalMixin):
     def __init__(self, n_iter=10, learning_rate=0.01, verbose=False):
         self.n_iter = n_iter
         self.learning_rate = learning_rate
+        self.verbose=verbose
     
     def fit(self, X, y, times=None):
         
         # TODO: add check_X_y from sksurv
         monotonic_cst = np.zeros(X.shape[1]+1)
         monotonic_cst[0] = -1
+
         hgbc = HistGradientBoostingRegressor(
             learning_rate=self.learning_rate,
             loss="squared_error",
@@ -96,6 +98,5 @@ class YASGBT(BaseEstimator, SurvivalMixin):
             Xt = np.hstack([t, X])
             y_probs = self.hgbc_.predict(Xt)
             all_y_probs.append(y_probs)
-        all_y_probs = np.vstack(all_y_probs).T
         
-        return all_y_probs
+        return np.vstack(all_y_probs).T
