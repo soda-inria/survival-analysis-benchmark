@@ -132,3 +132,7 @@ dmypy.json
 *.db
 *.db.wal
 *.db.tmp
+
+# data
+*.7z
+*.csv
