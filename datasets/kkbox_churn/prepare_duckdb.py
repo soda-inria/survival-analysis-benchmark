@@ -62,11 +62,11 @@ for table_name, schema in table_schemas.items():
             f" WITH (FORMAT CSV, HEADER TRUE, DATEFORMAT '%Y%m%d');"
         )
         toc = perf_counter()
-        transactions = connection.table(table_name)
+        table = connection.table(table_name)
         print(
-            f"Imported {transactions.count().execute()} rows into "
-            f"transactions table in {toc - tic:0.3f} seconds"
+            f"Imported {table.count().execute()} rows into "
+            f"table '{table_name}' in {toc - tic:0.3f} seconds"
         )
     else:
         print(f"Table '{table_name}' already exists")
-        transactions = connection.table(table_name)
+        table = connection.table(table_name)
