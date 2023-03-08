@@ -5,12 +5,13 @@ from ibis import deferred as c
 ibis.options.interactive = True
 
 duckdb_on_disk_conn = ibis.duckdb.connect(database="kkbox.db")
+
+# %%
 transactions = duckdb_on_disk_conn.table("transactions")
 transactions
 
 # %%
 transactions.count()
-
 
 # %%
 entity_window = ibis.cumulative_window(
@@ -55,12 +56,14 @@ deadline_date = c.transaction_date.lag().over(entity_window) + threshold
 is_new_session = (c.transaction_date > deadline_date).fillna(False)
 
 sessionized = (
-    transactions.mutate(is_new_session=is_new_session)
+    transactions
+    .mutate(is_new_session=is_new_session)
     .mutate(session_id=c.is_new_session.sum().over(entity_window))
     .drop("is_new_session")
 )
 sessions = (
-    sessionized.group_by([c.msno, c.session_id])
+    sessionized
+    .group_by([c.msno, c.session_id])
     .aggregate(
         session_start_date=c.transaction_date.min(),
         session_end_date=c.transaction_date.max(),
