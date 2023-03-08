@@ -57,6 +57,7 @@ for table_name, schema in table_schemas.items():
         tic = perf_counter()
         # transaction table
         connection.create_table(table_name, schema=schema)
+        # XXX: use ibis.duckdb.from_csv() instead?
         connection.raw_sql(
             f"COPY {table_name} FROM '{KKBOX_DATA_FOLDER}/{csv_filename}'"
             f" WITH (FORMAT CSV, HEADER TRUE, DATEFORMAT '%Y%m%d');"
@@ -70,3 +71,10 @@ for table_name, schema in table_schemas.items():
     else:
         print(f"Table '{table_name}' already exists")
         table = connection.table(table_name)
+    parquet_filename = table_name + ".parquet"
+    if not Path(parquet_filename).exists():
+        print(f"Writing {table_name} to {parquet_filename}...")
+        tic = perf_counter()
+        table.to_parquet(parquet_filename)
+        toc = perf_counter()
+        print(f"Wrote {table_name} to {parquet_filename} in {toc - tic:0.3f} seconds")
