@@ -4,7 +4,7 @@ from ibis import deferred as c
 
 ibis.options.interactive = True
 
-duckdb_on_disk_conn = ibis.duckdb.connect(database="kkbox.db", read_only=False)
+duckdb_on_disk_conn = ibis.duckdb.connect(database="kkbox.db")
 transactions = duckdb_on_disk_conn.table("transactions")
 transactions
 
@@ -20,23 +20,28 @@ threshold = ibis.interval(days=60)
 deadline_date = c.transaction_date.lag().over(entity_window) + threshold
 
 (
-    transactions.select([c.msno, c.transaction_date]).mutate(
-        deadline_date=deadline_date,
-    )
+    transactions
+    .select([c.msno, c.transaction_date])
+    .mutate(deadline_date=deadline_date)
 )
 
 
 # %%
 (
-    transactions.select([c.msno, c.transaction_date]).mutate(
+    transactions
+    .select([c.msno, c.transaction_date])
+    .mutate(
         is_new_session=(c.transaction_date > deadline_date).fillna(False)
     )
 )
 
 # %%
 (
-    transactions.select([c.msno, c.transaction_date])
-    .mutate(is_new_session=(c.transaction_date > deadline_date).fillna(False))
+    transactions
+    .select([c.msno, c.transaction_date])
+    .mutate(
+        is_new_session=(c.transaction_date > deadline_date).fillna(False)
+    )
     .mutate(session_id=c.is_new_session.sum().over(entity_window))
 )
 
@@ -66,6 +71,7 @@ sessions = (
 # %%
 # ibis.show_sql(sessions)
 
+
 # %%
 def sessionize(table, threshold, entity_col, date_col):
     entity_window = ibis.cumulative_window(
@@ -75,14 +81,17 @@ def sessionize(table, threshold, entity_col, date_col):
     is_new_session = (date_col > deadline_date).fillna(False)
 
     return (
-        table.mutate(is_new_session=is_new_session)
+        table
+        .mutate(is_new_session=is_new_session)
         .mutate(session_id=c.is_new_session.sum().over(entity_window))
         .drop("is_new_session")
     )
 
+
 def extract_sessions(table, entity_col, date_col, session_col):
     return (
-        table.group_by([entity_col, session_col])
+        table
+        .group_by([entity_col, session_col])
         .aggregate(
             session_start_date=date_col.min(),
             session_end_date=date_col.max(),
@@ -90,11 +99,22 @@ def extract_sessions(table, entity_col, date_col, session_col):
         .order_by([entity_col, c.session_start_date])
     )
 
+
 def preprocess_transactions(transactions):
     return (
         transactions
-        .pipe(sessionize, threshold=ibis.interval(days=60), entity_col=c.msno, date_col=c.transaction_date)
-        .pipe(extract_sessions, entity_col=c.msno, date_col=c.transaction_date, session_col=c.session_id)
+        .pipe(
+            sessionize,
+            threshold=ibis.interval(days=60),
+            entity_col=c.msno,
+            date_col=c.transaction_date,
+        )
+        .pipe(
+            extract_sessions,
+            entity_col=c.msno,
+            date_col=c.transaction_date,
+            session_col=c.session_id,
+        )
     )
 
 # %%
@@ -121,7 +141,6 @@ transactions = clickhouse_conn.table("transactions")
 #         .pipe(sessionize, threshold=ibis.interval(days=2), entity_col=c.msno, date_col=c.date)
 #         .pipe(extract_sessions, entity_col=c.msno, date_col=c.date, session_col=c.session_id)
 #     )
-
 # %time preprocess_user_logs(user_logs).count().execute()
 
 # %%
