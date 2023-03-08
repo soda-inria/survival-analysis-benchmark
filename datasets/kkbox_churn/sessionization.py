@@ -1,11 +1,12 @@
 # %%
 import numpy as np
 import ibis
-from ibis import _ as c  # to avoid name confict with Jupyter's _
+from ibis import deferred as c  # to avoid name confict with Jupyter's _
 
 
 duckdb_conn = ibis.duckdb.connect(database="kkbox.db", read_only=True)
 transactions = duckdb_conn.table("transactions")
+
 
 # %%
 def add_resubscription_window(
@@ -48,7 +49,7 @@ def add_resubscription_window(
     )
 
 
-#%%
+# %%
 
 
 def add_resubscription_groupby_lag(
@@ -117,11 +118,14 @@ def add_resubscription_groupby_lag(
 
 # %%
 example_msno = "+8ZA0rcIhautWvUbAM58/4jZUvhNA4tWMZKhPFdfquQ="
-(
-    transactions.filter(c.msno == example_msno)
-    .pipe(add_resubscription_groupby_lag)
-    .order_by([c.msno, c.transaction_date, c.membership_expire_date])
-).execute()
+
+
+# %%
+# (
+#     transactions.filter(c.msno == example_msno)
+#     .pipe(add_resubscription_groupby_lag)
+#     .order_by([c.msno, c.transaction_date, c.membership_expire_date])
+# ).execute()
 
 # %%
 (
@@ -129,6 +133,7 @@ example_msno = "+8ZA0rcIhautWvUbAM58/4jZUvhNA4tWMZKhPFdfquQ="
     .pipe(add_resubscription_window)
     .order_by([c.msno, c.transaction_date, c.membership_expire_date])
 ).execute()
+
 
 # %%
 def count_resubscriptions(expr):
@@ -138,15 +143,15 @@ def count_resubscriptions(expr):
 
 
 # %%
-counts_groupby_lag = (
-    transactions.pipe(add_resubscription_groupby_lag)
-    .pipe(count_resubscriptions)
-    .group_by(c.n_resubscriptions)
-    .aggregate(
-        n_members=c.msno.count(),
-    )
-).execute()
-counts_groupby_lag
+# counts_groupby_lag = (
+#     transactions.pipe(add_resubscription_groupby_lag)
+#     .pipe(count_resubscriptions)
+#     .group_by(c.n_resubscriptions)
+#     .aggregate(
+#         n_members=c.msno.count(),
+#     )
+# ).execute()
+# counts_groupby_lag
 
 # %%
 counts_window = (
@@ -160,14 +165,14 @@ counts_window = (
 counts_window
 
 # %%
-assert (counts_window == counts_groupby_lag).all().all()
+# assert (counts_window == counts_groupby_lag).all().all()
 
 # %%
 # Both methods return the same results on duckdb and take the same
 # time. From now one use the group_by + lag variant since not
 # all the backends support the generic Window Function API
-# add_resubscription = add_resubscription_window
-add_resubscription = add_resubscription_groupby_lag
+add_resubscription = add_resubscription_window
+# add_resubscription = add_resubscription_groupby_lag
 
 
 # %%
@@ -177,6 +182,7 @@ add_resubscription = add_resubscription_groupby_lag
     .order_by([c.n_resubscriptions.desc(), c.msno])
     .limit(10)
 ).execute()
+
 
 # %%
 def add_n_resubscriptions(expr):
@@ -253,6 +259,7 @@ example_msno = "AHDfgFvwL4roCSwVdCbzjUfgUuibJHeMMl2Nx0UDdjI="
     .order_by([c.transaction_date, c.membership_expire_date])
 ).execute()
 
+
 # %%
 def subsample_by_unique(expr, col_name="msno", size=1, seed=None):
     unique_col = expr[[col_name]].distinct()
@@ -295,29 +302,31 @@ from time import perf_counter
 
 def bench_sessionization(conn):
     tic = perf_counter()
+    sessionized = (
+        conn.table("transactions")
+        .pipe(add_resubscription)
+        .pipe(add_n_resubscriptions)
+        .pipe(add_subscription_id)
+        .select(c.msno, c.subscription_id, c.n_resubscriptions, c.transaction_date)
+    )
+    most_resubscribed = sessionized.msno.topk(5, by=sessionized.n_resubscriptions.max())
     results = (
-        (
-            conn.table("transactions")
-            .pipe(add_resubscription)
-            .pipe(add_n_resubscriptions)
-            .pipe(add_subscription_id)
-            .order_by(
-                [
-                    c.transaction_date.desc(),
-                    c.membership_expire_date,
-                    c.msno,
-                ]
-            )
-            .select(c.msno, c.subscription_id, c.n_resubscriptions, c.transaction_date)
+        sessionized.semi_join(most_resubscribed, sessionized.msno == most_resubscribed.msno)
+        .order_by(
+            [
+                ibis.desc(c.transaction_date),
+                c.msno,
+                c.subscription_id,
+            ]
         )
-        .limit(10)
         .execute()
     )
     toc = perf_counter()
     print(f"Sessionization took {toc - tic:.1f} seconds")
-    print(results)
+    return results
 
 
+# %%
 bench_sessionization(duckdb_conn)
 
 # %%
@@ -331,13 +340,7 @@ for table_name, path in parquet_files.items():
 bench_sessionization(duckdb_parquet_conn)
 
 # %%
-# XXX: pandas window functions are not trustworthy
-# ValueError: Can only compare identically-labeled Series objects
-# might or not be related to:
-# https://github.com/ibis-project/ibis/issues/4676
-
-# The lag / cumsum variants should be supported though, but it is
-# slow as there is no parallel computation with the pandas backend...
+# XXX: pandas is quite slow: I never waited until the end.
 
 # import pandas as pd
 
@@ -360,26 +363,28 @@ bench_sessionization(duckdb_parquet_conn)
 # %% XXX: ibis' Arrow DataFusion backend does not translate Window ops, neight
 # with the generic Window API nor with the lag / cumsum variants:
 # OperationNotDefinedError: No translation rule for <class
-# 'ibis.expr.operations.analytic.Window'>
+# 'ibis.expr.operations.generic.Greatest'>
 # datafusion_conn = ibis.datafusion.connect(parquet_files)
 # bench_sessionization(datafusion_conn)
 
 # %%
-# XXX: polars does not support window functions
-# OperationNotDefinedError: No translation rule for <class 'ibis.expr.operations.analytic.Window'>
-
-# XXX: even for the lag / cumsum variant does not work...
+# XXX: polars does not support window all window functions:
+# OperationNotDefinedError: No translation rule for
+# <class 'ibis.expr.operations.window.WindowFunction'>
 # polars_conn = ibis.polars.connect()
 # for table_name, path in parquet_files.items():
-#     polars_conn.register_parquet(name=table_name, path=path)
+#     polars_conn.register(path, table_name=table_name)
 
 # bench_sessionization(polars_conn)
 
 # %%
 # Note: to use clickhouse, one needs to first start the server with `clickhouse server`.
 
-# XXX: the following raises NotImplementedError..., too bad.
-# ibis.clickhouse.connect().create_table("transactions", pd.read_parquet("transactions.parquet"))
+# XXX: not possible to register parquet files, too bad.
+
+# clickouse_conn = ibis.clickhouse.connect()
+# for table_name, path in parquet_files.items():
+#     clickouse_conn.register(path, table_name=table_name)
 
 # %%
 # clickhouse_conn.raw_sql("DROP TABLE transactions")
