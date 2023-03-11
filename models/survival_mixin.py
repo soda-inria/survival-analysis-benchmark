@@ -15,8 +15,8 @@ class SurvivalMixin:
 
     @staticmethod
     def train_test_split(X, y, train_idxs, val_idxs):
-        X_train, y_train = X.values[train_idxs, :], y[train_idxs]
-        X_val, y_val = X.values[val_idxs, :], y[val_idxs]
+        X_train, y_train = X[train_idxs, :], y[train_idxs]
+        X_val, y_val = X[val_idxs, :], y[val_idxs]
         return X_train, y_train, X_val, y_val
 
     @staticmethod

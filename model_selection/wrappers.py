@@ -73,8 +73,8 @@ class DeepHitWrapper(BaseWrapper):
         return survival_probs
     
     def train_test_split(self, X, y, train_idxs, val_idxs):
-        X_train = X.values[train_idxs, :]
-        X_val = X.values[val_idxs, :]
+        X_train = X[train_idxs, :]
+        X_val = X[val_idxs, :]
         y_train = (
             y[0][train_idxs],
             y[1][train_idxs],

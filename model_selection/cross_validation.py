@@ -25,6 +25,7 @@ def run_cv(
     subsample_val=1,
     cv=None,
     single_fold=False,
+    random_state=42,
 ):
     """Run cross validation and save score.
 
@@ -47,9 +48,12 @@ def run_cv(
         The number of first rows to select for keys 'train' and 'val'.
         If `subset` is not None, one value must be set for each key.
     """
+    if isinstance(X, pd.DataFrame):
+        X = X.values
+
     cv_scores = defaultdict(list)
 
-    cv = cv or KFold()
+    cv = cv or KFold(shuffle=True, random_state=random_state)
     for train_idxs, val_idxs in cv.split(X):
 
         if subsample_train:
@@ -65,6 +69,7 @@ def run_cv(
         print(f"train set: {len(train_idxs)}, val set: {len(val_idxs)}")
 
         X_train, y_train, X_val, y_val = estimator.train_test_split(X, y, train_idxs, val_idxs)
+        X_val, y_val = truncate_val_to_train(y_train, X_val, y_val)
 
         # Generate evaluation time steps as a subset of the train and val durations.
         times = get_time_grid(y_train, y_val)
@@ -104,20 +109,28 @@ def run_cv(
     save_scores(estimator.name, cv_scores)
 
 
-def get_scores(estimator, y_train, X_val, y_val, times):
+def survival_to_risk_estimate(survival_probs):
+    return -np.log(survival_probs + 1e-8).sum(axis=1)
+
+
+def get_scores(
+        estimator,
+        y_train,
+        X_val,
+        y_val,
+        times,
+        use_cindex_ipcw=False,
+    ):
 
     t0 = perf_counter()
     survival_probs = estimator.predict_survival_function(X_val, times)
     t1 = perf_counter()
 
-    risk_estimate = estimator.predict_risk_estimate(X_val, times)
+    risk_estimate = survival_to_risk_estimate(survival_probs)
     y_train_arr, y_val_arr = estimator.prepare_y_scoring(y_train, y_val)
 
     _, brier_scores = brier_score(y_train_arr, y_val_arr, survival_probs, times)
     ibs = integrated_brier_score(y_train_arr, y_val_arr, survival_probs, times)
-
-    # The AUC is very close to the IBS in this benchmark, so we don't compute it.
-    # auc, mean_auc = cumulative_dynamic_auc(y_train, y_test, cumulative_hazards, times)
 
     # As the C-index is expensive to compute, we only consider a subsample of our data. 
     N_sample_c_index = 50_000
@@ -126,23 +139,31 @@ def get_scores(estimator, y_train, X_val, y_val, times):
         y_val_arr["duration"][:N_sample_c_index],
         risk_estimate[:N_sample_c_index],
     )[0]
-    # c_index_ipcw = concordance_index_ipcw(
-    #     y_train[:N_sample_c_index],
-    #     y_test[:N_sample_c_index],
-    #     risk_estimate[:N_sample_c_index],
-    # )[0]
 
-    return dict(
+    results = dict(
         brier_scores=brier_scores,
         ibs=ibs,
         times=times,
         survival_probs=survival_probs,
-        # auc=auc,
-        # mean_auc=mean_auc,
         c_index=c_index,
-        # c_index_ipcw=c_index_ipcw,
         prediction_duration=t1 - t0,
     )
+
+    if use_cindex_ipcw:
+        c_index_ipcw = concordance_index_ipcw(
+            y_train_arr[:N_sample_c_index],
+            y_val_arr[:N_sample_c_index],
+            risk_estimate[:N_sample_c_index],
+        )[0]
+        results["c_index_ipcw"] = c_index_ipcw
+
+    return results
+
+
+def truncate_val_to_train(y_train, X_val, y_val):
+    """Enforce y_val to stay below y_train upper bound"""
+    out_of_bound_mask = y_train["duration"].max() <= y_val["duration"]
+    return X_val[~out_of_bound_mask, :], y_val[~out_of_bound_mask]
 
 
 def get_time_grid(y_train, y_val, n=100):
@@ -183,22 +204,31 @@ def get_all_results(match_filter: str = None):
             result = pickle.load(open(path, "rb"))
             model_name = path.name.split(".")[0].split("_")[-1]
 
-            add_lines(result, model_name, lines)
-            add_tables(result, model_name, tables)
+            line = make_row_line(result, model_name)
+            table = make_row_table(result, model_name)
+
+            lines.append(line)
+            tables.append(table)
 
     df_tables = pd.DataFrame(tables)
     df_lines = pd.DataFrame(lines)
     
     # sort by ibs
-    df_tables["ibs_tmp"] = df_tables["IBS"].str.split("±").str[0] \
-                                           .astype(np.float64)
-    df_tables = df_tables.sort_values("ibs_tmp").reset_index(drop=True)
-    df_tables.pop("ibs_tmp")
+    df_tables["ibs_tmp"] = (
+        df_tables["IBS"].str.split("±")
+        .str[0]
+        .astype(np.float64)
+    )
+    df_tables = (
+        df_tables.sort_values("ibs_tmp")
+        .reset_index(drop=True)
+        .drop(["ibs_tmp"], axis=1)
+    )
     
     return df_tables, df_lines
     
 
-def add_lines(result, model_name, lines):
+def make_row_line(result, model_name):
     
     # times are the same across all folds, output shape: (times)
     times = result["times"][0] 
@@ -210,16 +240,15 @@ def add_lines(result, model_name, lines):
     # output shape: (n_val, times)
     survival_probs = np.asarray(result["survival_probs"][0])
     
-    row = dict(
+    return dict(
         model=model_name,
         times=times,
         brier_scores=brier_scores,
         survival_probs=survival_probs,
     )
-    lines.append(row)
     
 
-def add_tables(result, model_name, tables):
+def make_row_table(result, model_name):
 
     row = {"Method": model_name}
     
@@ -234,5 +263,5 @@ def add_tables(result, model_name, tables):
     
     for col in ["n_sample_train", "n_sample_val"]:
         row[col] = result[col]
-    
-    tables.append(row)
+
+    return row 
