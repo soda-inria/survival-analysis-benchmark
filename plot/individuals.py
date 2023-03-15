@@ -8,21 +8,26 @@ def plot_individuals_survival_curve(df_tables, df_lines, y, n_indiv=5):
 
     Parameters
     ----------
-        df_tables: pd.DataFrame,
-            | Method | IBS
-            Useful to rank estimators plot by mean IBS.
+    df_tables: pd.DataFrame,
+        | Method | IBS
+        Useful to rank estimators plot by mean IBS.
 
-        df_lines: pd.DataFrame
-            | model  | times | survival_probs
-            Individual survival_probs to sample from and plot
-        
-        y: np.ndarray,
-            Target vector, containing survival or 
-            censoring times, useful to plot markers
+    df_lines: pd.DataFrame
+        | model  | times | survival_probs
+        Individual survival_probs to sample from and plot
+    
+    y: np.ndarray,
+        Target vector, containing survival or 
+        censoring times, useful to plot markers
 
-        n_indiv: int,
-            Number of individual curves to display.
-            
+    n_indiv: int,
+        Number of individual curves to display.
+    
+    Notes
+    -----
+    'df_tables' and 'df_lines' are loaded with
+    `model_selection.cross_validation.get_all_results()` after
+    cross validation with `model_selection.cross_validation.run_cv()`
     """
     # use df_tables to sort df_lines
     df_tables["mean_IBS"] = df_tables["IBS"].str.split("±") \

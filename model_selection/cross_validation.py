@@ -6,7 +6,7 @@ from pathlib import Path
 import pickle
 from time import perf_counter
 
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, train_test_split
 
 from sksurv.metrics import (
     brier_score,
@@ -21,8 +21,8 @@ def run_cv(
     X,
     y,
     estimator,
-    subsample_train=1,
-    subsample_val=1,
+    subsample_train=1.0,
+    subsample_val=1.0,
     cv=None,
     single_fold=False,
     random_state=42,
@@ -51,25 +51,23 @@ def run_cv(
     if isinstance(X, pd.DataFrame):
         X = X.values
 
-    cv_scores = defaultdict(list)
-
+    cv_scores = []
     cv = cv or KFold(shuffle=True, random_state=random_state)
+
     for train_idxs, val_idxs in cv.split(X):
 
-        if subsample_train:
-            n_train = len(train_idxs)
-            subset_train = int(subsample_train * n_train)
-            train_idxs = train_idxs[:subset_train]
+        size_train = int(subsample_train * len(train_idxs))
+        size_val = int(subsample_val * len(val_idxs))
 
-        if subsample_val:
-            n_val = len(val_idxs)
-            subset_val = int(subsample_val * n_val)
-            val_idxs = val_idxs[:subset_val]
+        train_idxs = train_idxs[:size_train]
+        val_idxs = val_idxs[:size_val]
 
-        print(f"train set: {len(train_idxs)}, val set: {len(val_idxs)}")
+        X_train, y_train = X[train_idxs], y[train_idxs]
+        X_val, y_val = X[val_idxs], y[val_idxs]
 
-        X_train, y_train, X_val, y_val = estimator.train_test_split(X, y, train_idxs, val_idxs)
         X_val, y_val = truncate_val_to_train(y_train, X_val, y_val)
+
+        print(f"train set: {X_train.shape[0]}, val set: {X_val.shape[0]}")
 
         # Generate evaluation time steps as a subset of the train and val durations.
         times = get_time_grid(y_train, y_val)
@@ -79,34 +77,33 @@ def run_cv(
         t1 = perf_counter()
 
         scores = get_scores(estimator, y_train, X_val, y_val, times)
-
-        # Accumulate each score into a separate list.
-        for k, v in scores.items():
-            cv_scores[k].append(v)
-        cv_scores["training_duration"].append(t1 - t0)
+        scores["training_duration"] = t1 - t0
+        cv_scores.append(scores)
 
         if single_fold:
             break
 
     print("-" * 8)
-    # Compute each score mean and std
-    score_keys = [
-        "ibs",
-        "c_index",
-        #"c_index_ipcw",
-        "training_duration",
-        "prediction_duration",
-    ]
-    for k in score_keys:
-        values = cv_scores.pop(k)
-        k_mean, k_std = f"mean_{k}", f"std_{k}"
-        cv_scores[k_mean] = np.mean(values)
-        cv_scores[k_std] = np.std(values)
-        print(f"{k}: {cv_scores[k_mean]:.4f} ± {cv_scores[k_std]:.4f}")
-    cv_scores["n_sample_train"] = len(train_idxs)
-    cv_scores["n_sample_val"] = len(val_idxs)
+    results = {}
 
-    save_scores(estimator.name, cv_scores)
+    # sufficient statistics
+    for k in [
+        "ibs", "c_index", "training_duration", "prediction_duration"
+    ]:
+        score_mean  = np.mean([score[k] for score in cv_scores])
+        score_std = np.std([score[k] for score in cv_scores])
+        results[f"mean_{k}"] = score_mean
+        results[f"std_{k}"] = score_std
+        print(f"{k}: {score_mean:.4f} ± {score_std:.4f}")
+
+    # vectors
+    for k in ["times", "survival_probs", "brier_scores"]:
+        results[k] = [score[k] for score in cv_scores]
+
+    results["n_sample_train"] = len(train_idxs)
+    results["n_sample_val"] = len(val_idxs)
+
+    save_scores(estimator.name, results)
 
 
 def survival_to_risk_estimate(survival_probs):
@@ -127,16 +124,15 @@ def get_scores(
     t1 = perf_counter()
 
     risk_estimate = survival_to_risk_estimate(survival_probs)
-    y_train_arr, y_val_arr = estimator.prepare_y_scoring(y_train, y_val)
 
-    _, brier_scores = brier_score(y_train_arr, y_val_arr, survival_probs, times)
-    ibs = integrated_brier_score(y_train_arr, y_val_arr, survival_probs, times)
+    _, brier_scores = brier_score(y_train, y_val, survival_probs, times)
+    ibs = integrated_brier_score(y_train, y_val, survival_probs, times)
 
     # As the C-index is expensive to compute, we only consider a subsample of our data. 
     N_sample_c_index = 50_000
     c_index = concordance_index_censored(
-        y_val_arr["event"][:N_sample_c_index],
-        y_val_arr["duration"][:N_sample_c_index],
+        y_val["event"][:N_sample_c_index],
+        y_val["duration"][:N_sample_c_index],
         risk_estimate[:N_sample_c_index],
     )[0]
 
@@ -151,8 +147,8 @@ def get_scores(
 
     if use_cindex_ipcw:
         c_index_ipcw = concordance_index_ipcw(
-            y_train_arr[:N_sample_c_index],
-            y_val_arr[:N_sample_c_index],
+            y_train[:N_sample_c_index],
+            y_val[:N_sample_c_index],
             risk_estimate[:N_sample_c_index],
         )[0]
         results["c_index_ipcw"] = c_index_ipcw
@@ -172,30 +168,35 @@ def get_time_grid(y_train, y_val, n=100):
     return np.linspace(lower, upper, n)
 
 
-def save_scores(name, scores):
-    path = _make_path(name, create_dir=True)
+def save_scores(name, scores, create_dir=True):
+    path_results = get_path_results()
+    if create_dir:
+        path_results.mkdir(exist_ok=True, parents=True)
+    path = path_results / f"{name}.pkl"
+
     pickle.dump(scores, open(path, "wb+"))
 
 
 def load_scores(name):
-    path = _make_path(name, create_dir=False)
+    path_results = get_path_results()
+    path = path_results / f"{name}.pkl"
     return pickle.load(open(path, "rb"))
 
 
-def _make_path(name, create_dir):
-    path = Path(os.getenv("PYCOX_DATA_DIR")) / "kkbox_v1" / "results"
-    if create_dir:
-        path.mkdir(exist_ok=True, parents=True)
-    return path / f"{name}.pkl"
+def get_path_results():
+    return Path(os.getenv("PYCOX_DATA_DIR")) / "kkbox_v1" / "results"
 
 
 def get_all_results(match_filter: str = None):
-    
-    results_dir = Path(os.getenv("PYCOX_DATA_DIR")) / "kkbox_v1" / "results"
+    """Load all results matching `match_filter`, concatenate sufficient
+    statistics in `df_tables` and times, survival probs and
+    brier scores vectors into `df_lines`.
+    """
+    path_results = get_path_results()
     lines, tables = [], []
     match_filter = match_filter or ""
     
-    for path in results_dir.iterdir():
+    for path in path_results.iterdir():
         if (
             path.is_file()
             and path.suffix == ".pkl"
@@ -229,7 +230,10 @@ def get_all_results(match_filter: str = None):
     
 
 def make_row_line(result, model_name):
-    
+    """Format the results of a single model into a row with
+    times, survival probs and brier scores vectors for visualization
+    purposes.
+    """
     # times are the same across all folds, output shape: (times)
     times = result["times"][0] 
     
@@ -249,7 +253,9 @@ def make_row_line(result, model_name):
     
 
 def make_row_table(result, model_name):
-
+    """Format the results of a single model into a row with
+    sufficient statistics.
+    """
     row = {"Method": model_name}
     
     col_displayed = {"c_index": "C_td", "ibs": "IBS"}
