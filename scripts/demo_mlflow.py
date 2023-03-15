@@ -61,7 +61,7 @@ def main():
         mlflow.log_metrics(scores)
         mlflow.log_params(est_params)
         mlflow.log_artifact(bs_filename, artifact_path=bs_filename)
-        mlflow.log_artifact(surv_curv_filename, artifact_path=bs_filename)
+        mlflow.log_artifact(surv_curv_filename, artifact_path=surv_curv_filename)
 
 
 def download_data():
