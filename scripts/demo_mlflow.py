@@ -7,21 +7,14 @@ import mlflow
 from sksurv.datasets import get_x_y
 from pycox.datasets import kkbox_v1
 
-from ..models.yasgbt import YASGBTClassifier
-from ..model_selection.cross_validation import run_cv, get_all_results
-from ..plot.brier_score import plot_brier_scores
-from ..plot.individuals import plot_individuals_survival_curve
+from models.yasgbt import YASGBTClassifier
+from model_selection.cross_validation import run_cv, get_all_results
+from plot.brier_score import plot_brier_scores
+from plot.individuals import plot_individuals_survival_curve
 
 
-assert (
-    os.getenv("MLFLOW_S3_ENDPOINT_URL"),
-    "env variable MLFLOW_S3_ENDPOINT_URL must be set"
-)
-assert (
-    os.getenv("PYCOX_DATA_DIR"),
-    "env variable PYCOX_DATA_DIR must be set"
-)
-
+assert os.getenv("MLFLOW_S3_ENDPOINT_URL"), "env variable MLFLOW_S3_ENDPOINT_URL must be set"
+assert os.getenv("PYCOX_DATA_DIR"), "env variable PYCOX_DATA_DIR must be set"
 
 def main():
 
@@ -126,3 +119,7 @@ def extra_cleaning(df):
     )
 
     return df
+
+
+if __name__ == "__main__":
+    main()
