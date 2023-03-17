@@ -45,8 +45,8 @@ def plot_individuals_survival_curve(df_tables, df_lines, y, n_indiv=5):
     fig, axes = plt.subplots(
         nrows=n_rows,
         ncols=1,
-        figsize=(10, 17),
-        dpi=300,
+        #figsize=(10, 17),
+        #dpi=300,
         constrained_layout=True,
     )
 
@@ -59,14 +59,17 @@ def plot_individuals_survival_curve(df_tables, df_lines, y, n_indiv=5):
     idxs_indiv = np.random.uniform(high=max_indiv_id, size=n_indiv).astype(int)
 
     for idx, row in enumerate(df_lines.values):
+
+        if df_lines.shape[0] == 1:
+            ax = axes
+        else:
+            ax = axes[idx]
+
         for jdx in idxs_indiv:
             times = row[col_to_idx["times"]]
             surv_probs = row[col_to_idx["survival_probs"]][jdx, :]
-            axes[idx].plot(
-                times,
-                surv_probs
-            )
-            color = axes[idx].lines[-1].get_color()
+            ax.plot(times, surv_probs)
+            color = ax.lines[-1].get_color()
             # place the dot on the curve for viz purposes
             is_event = y["event"][jdx]
             event_time = y["duration"][jdx]
@@ -75,10 +78,12 @@ def plot_individuals_survival_curve(df_tables, df_lines, y, n_indiv=5):
                     np.abs(times - event_time)
                 )
             ]
-            axes[idx].plot(
+            ax.plot(
                 event_time,
                 surv_prob_projected,
                 "^" if is_event else "o",
                 color=color,
             )
-        axes[idx].set_title(row[col_to_idx["model"]])
+        ax.set_title(row[col_to_idx["model"]])
+
+    return fig

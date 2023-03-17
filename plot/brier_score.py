@@ -24,7 +24,7 @@ def plot_brier_scores(df_lines):
     cols = df_lines.columns
     col_to_idx = dict(zip(cols, range(len(cols))))
     
-    fig, ax = plt.subplots(figsize=(14, 5), dpi=300)
+    fig, ax = plt.subplots() #figsize=(14, 5), dpi=300)
     for row in df_lines.values:
         ax.plot(
             row[col_to_idx["times"]],
@@ -43,3 +43,5 @@ def plot_brier_scores(df_lines):
     )
     frame = legend.get_frame()
     frame.set_linewidth(2)
+
+    return fig
