@@ -2,6 +2,22 @@ from time import perf_counter
 from pathlib import Path
 import ibis
 
+# Download the original data with the kaggle cli. First generate an API
+# token as described here:
+#
+#   https://github.com/Kaggle/kaggle-api#api-credentials
+#
+# Then:
+#
+#   pip install kaggle
+#   kaggle competitions download kkbox-churn-prediction-challenge
+#
+# and decompress the .7z files using:
+#
+#   mamba install p7zip
+#   7z x members_v3.csv.7z
+#   7z x transactions.csv.7z
+#   7z x user_logs.csv.7z
 
 KKBOX_DATA_FOLDER = Path("~/data/kkbox-churn-prediction-challenge").expanduser()
 
