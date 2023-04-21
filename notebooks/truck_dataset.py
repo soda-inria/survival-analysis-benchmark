@@ -91,14 +91,14 @@ df.head()
 #
 # Let's say that Robusta and Cheapz have an equal share of the market:
 
-q_r, q_c = 0.90, 0.60
+q_r, q_c = 0.90, 0.30
 
 fig, ax = plt.subplots(figsize=(4, 4))
 ax.bar(["Robusta", "Cheapz"], height=[q_r, q_c]);
 ax.set_title("Assembly quality");
 
 # +
-df["brand"] = pd.Series(["R"] * (N//2) + ["C"] * (N//2))
+df["brand"] = pd.Series(["Robusta"] * (N//2) + ["Cheapz"] * (N//2))
 
 assembly_quality = np.hstack([
     np.full(shape=N//2, fill_value=q_r),
@@ -204,7 +204,7 @@ ax.set_title("Usage rate");
 
 df["usage_rate"] = usage_rate
 
-df = df.sample(frac=1)
+#df = df.sample(frac=1)
 df.head()
 
 # ## Assembly failure $e_1$
@@ -276,7 +276,7 @@ df.head()
 # +
 t = np.linspace(0, total_years, total_days)
 hazards_1 = np.vstack([
-    weibull_min.pdf(2*t, 1, loc=0, scale=l) / 800
+    weibull_min.pdf(2*t, 1, loc=0, scale=1) / (800 * l)
     for l in df["e_1_s"].values
 ])
 
@@ -289,15 +289,22 @@ ax.set(
     ylabel="$\lambda_1$",
 )
 plt.legend();
-# -
+
+# +
+brands = df["brand"].unique()
 
 fig, ax = plt.subplots()
-ax.plot(t, hazards_1.mean(axis=0))
+for brand in brands:
+    mask_brand = df["brand"] == brand
+    mean_hazards = hazards_1[mask_brand].mean(axis=0)
+    ax.plot(t, mean_hazards, label=brand)
 ax.set(
-    title="Average $\lambda_1(t)$ hazard",
+    title="Average $\lambda_1(t)$ hazard by brand",
     xlabel="time (years)",
     ylabel="$\lambda_1$",
-);
+)
+plt.legend();
+# -
 
 # ## Operation failure $e_2$
 #
@@ -320,14 +327,23 @@ hazards_2 = np.vstack([
     for e_2_coeff_ in e_2_coeff
 ])
 
+# +
+models = sorted(df["model_id"].unique())
+
 fig, ax = plt.subplots()
-ax.plot(t, hazards_2.mean(axis=0))
+for model in models:
+    mask_model = df["model_id"] == model
+    mean_hazards = hazards_2[mask_model].mean(axis=0)
+    ax.plot(t, mean_hazards, label=model)
 ax.set(
-    title="Average $\lambda_2(t)$",
+    title="Average $\lambda_2(t)$ by model",
     xlabel="time (days)",
     ylabel="$\lambda_2$",
-);
+)
+plt.legend();
 
+
+# -
 
 # ## Fatigue failure $e_3$
 #
@@ -364,11 +380,15 @@ plt.legend();
 # -
 
 fig, ax = plt.subplots()
-ax.plot(t, hazards_3.mean(axis=0))
+for model in models:
+    mask_model = df["model_id"] == model
+    hazards_mean = hazards_3[mask_model].mean(axis=0)
+    ax.plot(t, hazards_mean, label=model)
 ax.set(
     title="Average $\lambda_3(t)$",
     xlabel="time (years)"
-);
+)
+plt.legend();
 
 # ## Additive hazard curve (any event curve)
 #
@@ -497,7 +517,11 @@ ax.hist(hists, bins=100, stacked=True, label=labels);
 ax.set(title="Stacked combined duration distributions")
 plt.legend();
 
-df[observed_variables_and_target].to_parquet("factory_dataset.parquet", index=False)
+(
+    df[observed_variables_and_target]
+    .sample(frac=1)
+    .to_parquet("data_truck.parquet", index=False)
+)
 
 # ## Sampling targets at fixed conditional X
 #
@@ -613,5 +637,32 @@ for event, (ax, hazards) in enumerate(zip(axes, all_hazards), 1):
 # -
 
 # We see that the Aalan-Johansen estimator gives an accurate representation of the competitive hazards!
+#
+# Finally, let's save a dataset any event of this fixed covariate. We only keep only events that happened, so that we can add censoring to the dataset while knowing the underlying time-to-event distribution.
+
+df_single = pd.DataFrame(
+    dict(event=any_event, duration=y_fixed["duration"])
+)
+df_single = (
+    df_single.loc[df_single["event"]]
+    .reset_index(drop=True)
+)
+df_single.shape
+
+# +
+df_single["ground_truth_duration"] = df_single["duration"].copy()
+
+censored_duration = np.percentile(df_single["duration"], 70)
+mask_censoring = df_single["duration"] > censored_duration
+
+df_single.loc[mask_censoring, "event"] = False
+df_single.loc[mask_censoring, "duration"] = censored_duration
+
+df_single["event"].value_counts()
+# -
+
+df_single.to_parquet(
+    "data_truck_no_covariates.parquet", index=False,
+)
 
 
