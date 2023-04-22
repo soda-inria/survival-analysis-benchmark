@@ -67,6 +67,8 @@ df[["event", "duration"]].head()
 # - We ignore them, by only keeping events that happened and performing naive regression on them.
 # - We consider that all censored events happen at the end of our observation window.
 #
+# **Both approaches are wrong and lead to biased results.**
+#
 # Let's compute the average duration yielded by both approaches on our truck dataset. We will compare them to the mean of the ground-truth event time $T$, that we would obtained with an infinite observation window. 
 #
 # Note that we have access to the random variable $T$ because we generated this synthetic dataset. With real-world data, you only have access to $Y = \min(T, C)$, where $C$ is a random variable representing the censoring time.
@@ -74,9 +76,12 @@ df[["event", "duration"]].head()
 # %%
 stats_1 = (
     df.loc[df["event"]]["duration"]
-    .apply(["mean", "std"])
+    .apply(["mean", "median"])
 )
-print(f"Method 1: {stats_1['mean']:.2f} ± {stats_1['std']:.2f} days")
+print(
+    f"Biased method 1 - mean: {stats_1['mean']:.2f} days, "
+    f"median: {stats_1['median']:.2f} days"
+)
 
 # %%
 import numpy as np
@@ -86,13 +91,23 @@ stats_2 = (
     pd.Series(
         np.where(df["event"], df["duration"], max_duration)
     )
-    .apply(["mean", "std"])
+    .apply(["mean", "median"])
 )
-print(f"Method 2: {stats_2['mean']:.2f} ± {stats_2['std']:.2f} days")
+print(
+    f"Biased method 2 - mean: {stats_2['mean']:.2f} days, "
+    f"median: {stats_2['median']:.2f} days"
+)
 
 # %%
-true_stats = df["ground_truth_duration"].apply(["mean", "std"])
-print(f"Ground truth: {true_stats['mean']:.2f} ± {true_stats['std']:.2f} days")
+true_stats = df["ground_truth_duration"].apply(["mean", "median"])
+print(
+    f"Ground truth - mean: {true_stats['mean']:.2f} days, "
+    f"median: {true_stats['median']:.2f} days"
+)
+
+# %%
+true_stats = df["ground_truth_duration"].apply(["mean"])
+print(f"Ground truth: {true_stats['mean']:.2f} days")
 
 # %% [markdown]
 # We see that none of this naive methods gives a good estimate of the ground truth. A naive regression would try to estimate $\mathbb{E}[T|X]$, where $X$ are our covariates, but we only have access to $Y = \min(T, C)$.
@@ -114,7 +129,7 @@ print(f"Ground truth: {true_stats['mean']:.2f} ± {true_stats['std']:.2f} days")
 #
 # Where $t_i$ is the time of event for individual $i$ that experienced the event, $d_i$ is the number of individuals having experienced the event at $t_i$, and $n_i$ are the remaining individuals at risk at $t_i$. Note that individuals that were censored before $t_i$ are no longer considered at risk at $t_i$.
 #
-# In real-world application, we aim at estimating $\mathbb{E}[T]$ or $Q_{50\%}[T]$. The latter quantity represents the median survival duration i.e. the duration before 50% of our population at risk experiment the event. We can also be interested in estimating the survival probability after some time reference $P(T > t_{ref})$, e.g. a random clinical trial estimating the capacity of a drug to improve the survival probability after 6 months.
+# In real-world application, we aim at estimating $\mathbb{E}[T]$ or $Q_{50\%}[T]$. The latter quantity represents the median survival duration i.e. the duration before 50% of our population at risk experiment the event. We can also be interested in estimating the survival probability after some reference time $P(T > t_{ref})$, e.g. a random clinical trial estimating the capacity of a drug to improve the survival probability after 6 months.
 
 # %%
 import plotly.express as px
@@ -143,11 +158,12 @@ fig.update_layout(
     width=800,
     xaxis_title="time (days)",
     yaxis_title="$\hat{S}(t)$",
+    yaxis_range=[0, 1],
 )
 
 
 # %% [markdown]
-# We can read the median time to event directly from this curve, in this case close to 2500 days.
+# We can read the median time to event directly from this curve, in this case close to 1020 days.
 # Note that since we have censored data, $S(t)$ doesn't reach 0 within our observation window and we have residuals of 30%.
 
 # %% [markdown]
@@ -186,7 +202,7 @@ get_median_survival_proba(times, survival_probas)
 # </details>
 
 # %% [markdown]
-# We can enrich our analysis by introducing covariates, that might explain the events and durations.
+# We can enrich our analysis by introducing covariates, that are statistically associated to the events and durations.
 
 # %%
 df = pd.read_parquet("data_truck.parquet")
@@ -203,6 +219,17 @@ df
 # 3. Subplot this survival probability.
 #
 # What are the limits of this method?
+
+# %%
+brands = df["brand"].unique()
+fig_data = []
+for brand in brands:
+    df_brand = df.loc[df["brand"] == brand]
+    times_, survival_probas_ = kaplan_meier_estimator(df_brand["event"], df_brand["duration"])
+    fig_data.append(
+        go.Scatter(x=times_, y=survival_probas_, name=brand)
+    )
+go.Figure(fig_data)
 
 # %%
 import plotly.graph_objects as go
@@ -307,7 +334,7 @@ survival_proba_matrix = np.vstack([survival_proba] * n_samples)
 # numpy array target.
 y = make_target(df["event"], df["duration"])
 
-times, brier_scores = brier_score(
+times, km_brier_scores = brier_score(
     survival_train=y,
     survival_test=y,
     estimate=survival_proba_matrix,
@@ -318,7 +345,7 @@ times, brier_scores = brier_score(
 from matplotlib import pyplot as plt
 import seaborn as sns; sns.set_style("darkgrid")
 
-plt.plot(times, brier_scores);
+plt.plot(times, km_brier_scores);
 plt.title("Brier score of Kaplan Meier estimation (lower is better)");
 plt.xlabel("time (days)");
 
@@ -329,12 +356,13 @@ plt.xlabel("time (days)");
 # %%
 from sksurv.metrics import integrated_brier_score
 
-integrated_brier_score(
+km_ibs = integrated_brier_score(
     survival_train=y,
     survival_test=y,
     estimate=survival_proba_matrix,
     times=times,
 )
+km_ibs
 
 # %% [markdown]
 # ## IV. Predictive survival analysis
@@ -377,7 +405,7 @@ df
 duration = df.pop("duration")
 event = df.pop("event")
 y = make_target(event, duration)
-X = df_cov
+X = df
 
 # %%
 from sklearn.model_selection import train_test_split
@@ -416,21 +444,21 @@ transformer = None
 from sklearn.pipeline import make_pipeline
 from sksurv.linear_model import CoxPHSurvivalAnalysis
 
-est = make_pipeline(
+cox_ph = make_pipeline(
     transformer,
     CoxPHSurvivalAnalysis(alpha=1e-4)
 )
-est.fit(X_train, y_train)
+cox_ph.fit(X_train, y_train)
 
 # %%
-step_funcs = est.predict_survival_function(X_test)
+step_funcs = cox_ph.predict_survival_function(X_test)
 
 fig, ax = plt.subplots()
 for idx, step_func in enumerate(step_funcs[:5]):
     survival_proba = step_func(times)
     ax.plot(times, survival_proba, label=idx)
 ax.set(
-    title="Survival probabilities $\hat{S(t)}$ for 5 truck-driver pairs",
+    title="Survival probabilities $\hat{S(t)}$ of CoxPH",
     xlabel="time (days)",
     ylabel="S(t)",
 )
@@ -450,6 +478,20 @@ df.head()
 # *Hint*: You can access an element of a pipeline as simply as `pipeline[idx]`.
 
 # %%
+feature_names = cox_ph[0].get_feature_names_out()
+weights = cox_ph[-1].coef_
+
+features = (
+    pd.DataFrame(dict(
+        feature_name=feature_names,
+        weight=weights,
+    ))
+    .sort_values("weight", ascending=False)
+)
+ax = sns.barplot(features, y="feature_name", x="weight", orient="h")
+ax.set_title("Cox PH feature importance of $\lambda(t)$");
+
+# %%
 ### Your code here
 features_names = []
 weight = []
@@ -466,8 +508,8 @@ ax = sns.barplot(features, y="feature_name", x="weight", orient="h")
 # <br>
 #
 # ```python
-# feature_names = est[0].get_feature_names_out()
-# weights = est[-1].coef_
+# feature_names = cox_ph[0].get_feature_names_out()
+# weights = cox_ph[-1].coef_
 #
 # features = (
 #     pd.DataFrame(dict(
@@ -482,20 +524,165 @@ ax = sns.barplot(features, y="feature_name", x="weight", orient="h")
 #
 # </details>
 
-# %%
-### IV.2 Random Survival Forest
+# %% [markdown]
+# Finally, we compute the Brier score for our model.
 
 # %%
+survival_proba_matrix = np.vstack([step_func(times) for step_func in step_funcs])
 
-# %%
+_, cox_brier_scores = brier_score(
+    survival_train=y_train,
+    survival_test=y_test,
+    estimate=survival_proba_matrix,
+    times=times,
+)
+
+cox_ibs = integrated_brier_score(
+    survival_train=y_train,
+    survival_test=y_test,
+    estimate=survival_proba_matrix,
+    times=times,
+)
+
+fig, ax = plt.subplots()
+ax.plot(times, cox_brier_scores, label="CoxPH")
+ax.plot(times, km_brier_scores, label="KaplanMeier")
+ax.set(
+    title="Brier Scores of Cox PH",
+    xlabel="time (days)",
+    ylabel="$BS(t)^c$",
+)
+plt.legend();
+
+print(f"CoxPH IBS: {cox_ibs:.4f}")
+print(f"KaplanMeier IBS: {km_ibs:.4f}")
 
 # %% [markdown]
-# Note that the cumulative hazard is **not** a probability.
-#
-# Based on the formulas above, we can easily find the survival function $S(t)$ from the cumulative hazard $\Lambda(t)$:
+# ### IV.2 Random Survival Forest
+
+# %%
+from sksurv.ensemble import RandomSurvivalForest
+
+rsf = make_pipeline(
+    transformer,
+    RandomSurvivalForest(n_estimators=10, max_depth=4, n_jobs=-1),
+)
+rsf.fit(X_train, y_train)
+
+# %%
+times_chunked = times.copy()
+times_chunked[-1] -= 1
+
+# %%
+step_funcs = rsf.predict_survival_function(X_test)
+
+fig, ax = plt.subplots()
+for idx, step_func in enumerate(step_funcs[:5]):
+    survival_proba = step_func(times_chunked)
+    ax.plot(times_chunked, survival_proba, label=idx)
+ax.set(
+    title="Survival probabilities $\hat{S}(t)$ of Random Survival Forest",
+    xlabel="time (days)",
+    ylabel="S(t)",
+)
+plt.legend();
+
+# %%
+survival_proba_matrix = np.vstack([step_func(times_chunked) for step_func in step_funcs])
+
+_, rsf_brier_scores = brier_score(
+    survival_train=y_train,
+    survival_test=y_test,
+    estimate=survival_proba_matrix,
+    times=times,
+)
+
+rsf_ibs = integrated_brier_score(
+    survival_train=y_train,
+    survival_test=y_test,
+    estimate=survival_proba_matrix,
+    times=times,
+)
+
+fig, ax = plt.subplots()
+ax.plot(times, rsf_brier_scores, label="RandomSurvivalForest")
+ax.plot(times, cox_brier_scores, label="CoxPH")
+ax.plot(times, km_brier_scores, label="KaplanMeier")
+ax.set(
+    title="Brier Scores",
+    xlabel="time (days)",
+    ylabel="$BS(t)^c$",
+)
+plt.legend();
+
+print(f"RandomSurvivalForest IBS: {rsf_ibs:.4f}")
+print(f"CoxPH IBS: {cox_ibs:.4f}")
+print(f"KaplanMeier IBS: {km_ibs:.4f}")
 
 # %% [markdown]
-# ***// Can be completed as an exercice //***
+# ### IV.3 GradientBoostedIBS
+
+# %%
+import sys; sys.path.append("..")
+from models.yasgbt import YASGBTRegressor
+from model_selection.wrappers import PipelineWrapper
+
+gb_model = make_pipeline(
+    transformer,
+    YASGBTRegressor(max_depth=5),
+)
+gb_model = PipelineWrapper(gb_model)
+gb_model.fit(X_train, y_train, times)
+
+# %%
+survival_proba_matrix = gb_model.predict_survival_function(X_test, times)
+
+_, gb_model_brier_scores = brier_score(
+    survival_train=y_train,
+    survival_test=y_test,
+    estimate=survival_proba_matrix,
+    times=times,
+)
+
+gb_model_ibs = integrated_brier_score(
+    survival_train=y_train,
+    survival_test=y_test,
+    estimate=survival_proba_matrix,
+    times=times,
+)
+
+fig, ax = plt.subplots()
+ax.plot(times, gb_model_brier_scores, label="GradientBoostedIBS")
+ax.plot(times, rsf_brier_scores, label="RandomSurvivalForest")
+ax.plot(times, cox_brier_scores, label="CoxPH")
+ax.plot(times, km_brier_scores, label="KaplanMeier")
+ax.set(
+    title="Brier Scores",
+    xlabel="time (days)",
+    ylabel="$BS(t)^c$",
+)
+plt.legend();
+
+print(f"GradientBoostedIBS IBS: {gb_model_ibs:.4f}")
+print(f"RandomSurvivalForest IBS: {rsf_ibs:.4f}")
+print(f"CoxPH IBS: {cox_ibs:.4f}")
+print(f"KaplanMeier IBS: {km_ibs:.4f}")
+
+# %%
+survival_proba_matrix = gb_ibs.predict_survival_function()
+
+# %%
+## TODO
+# Add c-index for tutorial dataset
+# Olivier: play with notebook dataset
+
+# %%
+
+# %%
+
+# %%
+
+# %%
 
 # %%
 fig, ax = plt.subplots()

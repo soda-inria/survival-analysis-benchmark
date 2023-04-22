@@ -28,7 +28,7 @@ class PipelineWrapper(BaseWrapper):
         self.estimator.fit(X_train, y_train, **times_kwargs)
     
     def predict_survival_function(self, X_test, times=None):
-        return self.estimator.predict_survival_function(X_test)
+        return self.estimator.predict_survival_function(X_test, times=times)
 
 
 class SkurvWrapper(BaseWrapper):

@@ -339,6 +339,7 @@ ax.set(
     title="Average $\lambda_2(t)$ by model",
     xlabel="time (days)",
     ylabel="$\lambda_2$",
+    ylim=[0, 0.0005],
 )
 plt.legend();
 
