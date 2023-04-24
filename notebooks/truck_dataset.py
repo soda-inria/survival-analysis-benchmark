@@ -70,10 +70,10 @@ total_days = total_years * 365
 
 # ### Driver training
 #
-# Across the fleet, 1/3 of drivers have little to no experience, another 1/3 have prior hands-on training and the last 1/3 has had a formal training on all equipments. We distinguish their skills as:
+# Across the fleet, 1/3 of drivers have little to no experience, another 1/3 have prior hands-on training and the last 1/3 has had a formal training on all equipments for the handling of emergency situations. We distinguish their skills as:
 
 # +
-driver_skills = [.5, .8, 1]
+driver_skills = [.2, .5, .95]
 
 df = pd.DataFrame(
     dict(
@@ -87,13 +87,13 @@ df.head()
 #
 # Let's imagine that the assembly quality depends on the supplier brand. There are two brands on the market, Robusta (R) and Cheapz (C). Cheapz is cheaper but has an assembly quality that is less reliable:
 #
-# $$q_{R}=0.90 \\ q_{C} = 0.60$$
+# $$q_{R}=0.95 \\ q_{C} = 0.30$$
 #
 # with the assembly quality $q \in [0, 1]$
 #
 # Let's say that Robusta and Cheapz have an equal share of the market:
 
-q_r, q_c = 0.90, 0.30
+q_r, q_c = 0.95, 0.30
 
 fig, ax = plt.subplots(figsize=(4, 4))
 ax.bar(["Robusta", "Cheapz"], height=[q_r, q_c]);
@@ -116,15 +116,15 @@ df.head()
 # Both brands produce 5 models with similar UX, depending on the year there were designed. Older trucks are often less intuitive and trickier to use, so the UX is improving for each new generation.
 #
 # $$
-# \mathrm{UX}_{1}=0.5 \\
-# \mathrm{UX}_{2}=0.7 \\
-# \mathrm{UX}_{3}=0.8 \\
+# \mathrm{UX}_{1}=0.2 \\
+# \mathrm{UX}_{2}=0.5 \\
+# \mathrm{UX}_{3}=0.7 \\
 # \mathrm{UX}_{4}=0.9 \\
 # \mathrm{UX}_{5}=1.0 \\
 # $$
 
 # +
-ux_levels = [.5, .7, .8, .9, 1]
+ux_levels = [.2, .5, .7, .9, 1.0]
 labels = [f"Model {idx}" for idx in range(1, len(ux_levels)+1)]
 ux_models = dict(zip(ux_levels, labels))
 
@@ -206,8 +206,9 @@ ax.set_title("Usage rate");
 
 df["usage_rate"] = usage_rate
 
-#df = df.sample(frac=1)
-df.head()
+df
+
+df.sample(frac=1e-3)
 
 
 # ## Assembly failure $e_1$
@@ -222,24 +223,27 @@ df.head()
 # - k = 1: constant hazards (exponential distribution): random events not related to time (e.g. driving accidents);
 # - k > 1: "aging" process, wear and tear... monotonically increasing hazards.
 
-def weibull_hazard(t, k=1., s=1., t_shift=0.001):
+def weibull_hazard(t, k=1., s=1., t_shift=0.1):
     # See: https://en.wikipedia.org/wiki/Weibull_distribution
     # t_shift is a trick to avoid avoid negative powers at t=0 when k < 1.
     t = t + t_shift
     return (k / s) * (t / s) ** (k - 1.)
 
 
+# +
 fig, ax = plt.subplots()
+hazards_ylim = [-0.001, .05]
+
 t = np.linspace(0, 10., 1000)
 for k, s in [(0.003, 1.), (1, 1e2), (7., 15.)]:
     y = weibull_hazard(t, k=k, s=s)
     ax.plot(t, y, alpha=0.6, label=f"$k={k}, s={s}$");
 ax.set(
     title="Weibull Hazard (failure rates)",
-    xlim=[-0.001, 10.],
-    ylim=[-0.001, 0.05],
+    ylim=hazards_ylim,
 );
 plt.legend();
+# -
 
 # We plot the Weibull distribution for a fix parameter $s$ for different values of $k$:
 
@@ -293,11 +297,11 @@ plt.legend();
 # since
 # $$\lambda_1 \sim \mathrm{Weibull}(s, k)$$
 
-df["e_1_s"] = 2 * df["assembly_quality"] * (1 - df["usage_rate"]) + 0.5
+df["e_1_s"] = (1 - df["assembly_quality"]) * df["usage_rate"]
 plt.hist(df["e_1_s"], bins=30);
 plt.title("Assembly failure $s$ coefficient distribution");
 
-df.head()
+df
 
 # We create a time vector spanning 10 years, binned for each day. We also scale the Weibull distribution by 100 to obtain realistic daily hazards.
 
@@ -305,7 +309,6 @@ df["e_1_s"].values.min()
 
 # +
 t = np.linspace(0, total_years, total_days)
-hazards_ylim = [-0.001, .05]
 
 # hazards_1 = np.vstack([
 #     weibull_min.pdf(2*t, 1, loc=0, scale=1) / (800 * l)
@@ -313,19 +316,20 @@ hazards_ylim = [-0.001, .05]
 # ])
 
 hazards_1 = np.vstack([
-    weibull_hazard(t, k=0.003, s=1.) * s * 5 for s in df["e_1_s"].values
+    weibull_hazard(t, k=0.0003, s=1.) * s for s in df["e_1_s"].values
 ])
 
 fig, ax = plt.subplots()
-for idx, hazards_1_ in enumerate(hazards_1[:5]):
-    ax.plot(t, hazards_1_, label=idx)  # from weeks to days
+for hazards_1_ in hazards_1[:5]:
+    ax.plot(t, hazards_1_)
+for hazards_1_ in hazards_1[-5:]:
+    ax.plot(t, hazards_1_)
 ax.set(
-    title="$\lambda_1$ hazard for 5 couples (driver, truck)",
+    title="$\lambda_1$ hazard for some (driver, truck) pairs",
     xlabel="time (years)",
     ylabel="$\lambda_1$",
     ylim=hazards_ylim,
-)
-plt.legend();
+);
 
 # +
 brands = df["brand"].unique()
@@ -346,20 +350,15 @@ plt.legend();
 
 # ## Operation failure $e_2$
 #
-# We consider the operation hazard to be constant.
-#
-# Therefore $\lambda_2 \propto (\frac{1}{\mathrm{operator\; training}})\times \frac{1}{\mathrm{UX}} \times \mathrm{usage\; rate}$.
+# We consider the operation hazard to be a constant modulated by driver skills, UX and usage rate.
 
-df["e_2_coeff"] = 1/df["driver_skills"] * 1/df["ux"] * df["usage_rate"] + .25
+df["e_2_coeff"] = 0.005 * ((1 - df["driver_skills"]) * (1 - df["ux"]) + .001) * df["usage_rate"]
 plt.hist(df["e_2_coeff"], bins=30);
 plt.title("$e_2$ coeff");
 
 # The baseline is one failure every 5 years, which we multiply be the $e_2$ coeff.
 
-e_2_base = 1 / (365 * 20)
-e_2_base
-
-e_2_coeff = e_2_base * df["e_2_coeff"]
+e_2_coeff = df["e_2_coeff"]
 hazards_2 = np.vstack([
     np.full_like(t, e_2_coeff_)
     for e_2_coeff_ in e_2_coeff
@@ -377,7 +376,7 @@ ax.set(
     title="Average $\lambda_2(t)$ by model",
     xlabel="time (days)",
     ylabel="$\lambda_2$",
-    ylim=[0, 0.0005],
+    ylim=hazards_ylim,
 )
 plt.legend();
 
@@ -399,23 +398,16 @@ plt.plot(t, baseline);
 plt.title("$\lambda_3$ failure baseline")
 plt.xlabel("times (years)");
 
-df["e_3_coeff"] = 10 * df["usage_rate"] * (1 - df["materials"])
-plt.hist(df["e_3_coeff"], bins=30);
-plt.title("$e_3$ coeff");
-
-df.head()
-
 # +
 hazards_3 = np.vstack([
-    baseline * e_3_coeff
-    for e_3_coeff in df["e_3_coeff"]
+    weibull_hazard(t, k=7 * material, s=15.) * rate
+    for material, rate in zip(df["materials"], df["usage_rate"])
 ])
 
 fig, ax = plt.subplots()
-for idx, h_3_ in enumerate(hazards_3[:5]):
-    ax.plot(t, h_3_, label=idx)
-ax.set(title="$\lambda_3$ hazard", xlabel="time (years)")
-plt.legend();
+for h_3_ in hazards_3[:5]:
+    ax.plot(t, h_3_)
+ax.set(title="$\lambda_3$ hazard", xlabel="time (years)");
 # -
 
 fig, ax = plt.subplots()
@@ -425,7 +417,7 @@ for model in models:
     ax.plot(t, hazards_mean, label=model)
 ax.set(
     title="Average $\lambda_3(t)$",
-    xlabel="time (years)"
+    xlabel="time (years)",
 )
 plt.legend();
 
@@ -445,8 +437,6 @@ ax.set(
     ylabel="$\lambda(t)$"
 )
 plt.legend();
-
-df.head()
 
 # ## Sampling from all hazards
 #
@@ -552,9 +542,11 @@ hists = [
 ]
 labels = [f"$e_{idx}$" for idx in range(4)]
 fig, ax = plt.subplots()
-ax.hist(hists, bins=100, stacked=True, label=labels);
+ax.hist(hists, bins=50, stacked=True, label=labels);
 ax.set(title="Stacked combined duration distributions")
 plt.legend();
+
+3000 / 365
 
 (
     df[observed_variables_and_target]
