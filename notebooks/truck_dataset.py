@@ -15,7 +15,9 @@
 
 # # The Truck Dataset
 
-# *A fleet of truck*
+# The purpose of this notebook is to generate a synthetic dataset of failure times with and without uncensoring to study survival analysis and competing risk analysis methods with access to the ground truth (e.g. uncensored failure times and true hazard functions).
+#
+# We chose to simulate a predictive maintenance problem, namely the failures during the operation of a fleet of trucks.
 
 # ### Type of failures
 #
@@ -23,7 +25,7 @@
 #
 # **1. Initial assembly failures $e_1$**
 #
-# This failure might occure during the first weeks after the machine setup. As these hazards could be due to some incorrect wiring or components assembly, they are dependent on the quality of assembly of each truck, along with its usage rate.
+# This failure might occure during the first weeks after the operation of a newly commissioned truck. As these hazards stem from **manufacturing defects** such as incorrect wiring or components assembly, they are dependent on the quality of assembly of each truck, along with its usage rate.
 #
 # **2. Operation failure $e_2$**
 #
@@ -31,7 +33,7 @@
 #
 # **3. Fatigue failure $e_3$**
 #
-# Fatigue failure relate the wear of the material and component of each truck through time. This type of hazard is linked to the quality of the material of the truck and also its usage rate.
+# Fatigue failure relate the wear of the material and components of each truck through time. This type of hazard is linked to the quality of the material of the truck and also its usage rate. I could also be linked to the ability of the driver to operate it with minimal wear and tear (e.g. reduced or anticipated use of breaks, use of gears and smooth accelerations and decelarations).
 
 # ### Observed and hidden variables
 # We make the simplistic assumptions that the variables of interest are constant through time. To create non-linearities and make the dataset more challenging, we consider that the observer don't have access to the three truck characteristics: assembly quality, UX and material quality.
@@ -207,11 +209,37 @@ df["usage_rate"] = usage_rate
 #df = df.sample(frac=1)
 df.head()
 
+
 # ## Assembly failure $e_1$
 #
 # Let $\lambda_1$ be the hazard related to the event $e_1$. We model the $\lambda_1$ with the [Weibull distribution](https://en.wikipedia.org/wiki/Weibull_distribution):
 #
 # $$f(x, s, k)=\begin{cases}\frac{k}{s}(\frac{x}{s})^{k-1}e^{-(x/s)^k} & \mathrm{if}\; x \geq 0 \\ 0 & \mathrm{o.w.}\end{cases}$$
+
+# ## TODO: use the Weibull hazard function instead of the PDF!
+#
+# - k < 1: is good to model manufacturing defects, "infant mortality" and similar, monotonically decreasing hazards;
+# - k = 1: constant hazards (exponential distribution): random events not related to time (e.g. driving accidents);
+# - k > 1: "aging" process, wear and tear... monotonically increasing hazards.
+
+def weibull_hazard(t, k=1., s=1., t_shift=0.001):
+    # See: https://en.wikipedia.org/wiki/Weibull_distribution
+    # t_shift is a trick to avoid avoid negative powers at t=0 when k < 1.
+    t = t + t_shift
+    return (k / s) * (t / s) ** (k - 1.)
+
+
+fig, ax = plt.subplots()
+t = np.linspace(0, 10., 1000)
+for k, s in [(0.003, 1.), (1, 1e2), (7., 15.)]:
+    y = weibull_hazard(t, k=k, s=s)
+    ax.plot(t, y, alpha=0.6, label=f"$k={k}, s={s}$");
+ax.set(
+    title="Weibull Hazard (failure rates)",
+    xlim=[-0.001, 10.],
+    ylim=[-0.001, 0.05],
+);
+plt.legend();
 
 # We plot the Weibull distribution for a fix parameter $s$ for different values of $k$:
 
@@ -273,11 +301,19 @@ df.head()
 
 # We create a time vector spanning 10 years, binned for each day. We also scale the Weibull distribution by 100 to obtain realistic daily hazards.
 
+df["e_1_s"].values.min()
+
 # +
 t = np.linspace(0, total_years, total_days)
+hazards_ylim = [-0.001, .05]
+
+# hazards_1 = np.vstack([
+#     weibull_min.pdf(2*t, 1, loc=0, scale=1) / (800 * l)
+#     for l in df["e_1_s"].values
+# ])
+
 hazards_1 = np.vstack([
-    weibull_min.pdf(2*t, 1, loc=0, scale=1) / (800 * l)
-    for l in df["e_1_s"].values
+    weibull_hazard(t, k=0.003, s=1.) * s * 5 for s in df["e_1_s"].values
 ])
 
 fig, ax = plt.subplots()
@@ -287,6 +323,7 @@ ax.set(
     title="$\lambda_1$ hazard for 5 couples (driver, truck)",
     xlabel="time (years)",
     ylabel="$\lambda_1$",
+    ylim=hazards_ylim,
 )
 plt.legend();
 
@@ -302,6 +339,7 @@ ax.set(
     title="Average $\lambda_1(t)$ hazard by brand",
     xlabel="time (years)",
     ylabel="$\lambda_1$",
+    ylim=hazards_ylim,
 )
 plt.legend();
 # -
