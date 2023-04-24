@@ -243,7 +243,6 @@ for brand in brands:
     ###
 go.Figure(fig_data)
 
-
 # %% [markdown]
 # <details><summary><i><b>Solution</b></i></summary>
 # <br>
@@ -274,22 +273,29 @@ go.Figure(fig_data)
 # ## III. Calibration using the integrated brier score (IBS)
 
 # %% [markdown]
-# The Brier score is a proper scoring rule that measures the calibration of our survival probabilities function. It answers the question "how close to the real probabilities are our estimates?". A good calibration is of crucial importance to make more intuitive predictions for decision making.
+# The Brier score is a proper scoring rule that measures the calibration of our survival probability predictions. It is comprised between 0 and 1 (lower is better).
+# It answers the question "how close to the real probabilities are our estimates?". A good calibration makes our predictions easier to explain.
 
 # %% [markdown]
+# <details><summary>Mathematical formulation</summary>
+#     
 # $$\mathrm{BS}^c(t) = \frac{1}{n} \sum_{i=1}^n I(d_i \leq t \land \delta_i = 1)
 #         \frac{(0 - \hat{S}(t | \mathbf{x}_i))^2}{\hat{G}(d_i)} + I(d_i > t)
 #         \frac{(1 - \hat{S}(t | \mathbf{x}_i))^2}{\hat{G}(t)}$$
-
-# %% [markdown]
-# <figure>
-# <img src="BrierScore.svg" style="width:80%">
-# </figure>
-
-# %% [markdown]
+#     
 # In the survival analysis context, the Brier Score can be seen as the Mean Squared Error (MSE) between our probability $\hat{S}(t)$ and our target label $\delta_i \in {0, 1}$, weighted by the inverse probability of censoring $\frac{1}{\hat{G}(t)}$.
 # - When no event or censoring has happened at $t$ yet, i.e. $I(d_i > t)$, we penalize a low probability of survival with $(1 - \hat{S}(t|\mathbf{x}_i))^2$.
 # - Conversely, when an individual has experienced an event before $t$, i.e. $I(d_i \leq t \land \delta_i = 1)$, we penalize a high probability of survival with $(0 - \hat{S}(t|\mathbf{x}_i))^2$.
+#     
+# <figure>
+# <img src="BrierScore.svg" style="width:80%">
+# </figure>
+#     
+# </details>
+
+# %%
+times, survival_proba = kaplan_meier_estimator(df["event"], df["duration"])
+
 
 # %%
 def make_target(event, duration):
@@ -301,14 +307,13 @@ def make_target(event, duration):
     )
     y["event"] = event
     y["duration"] = duration
+    
     return y
 
 
 # %%
 from sksurv.metrics import brier_score
 from sksurv.functions import StepFunction
-
-times, survival_proba = kaplan_meier_estimator(df["event"], df["duration"])
 
 # Create a callable function from times and survival proba.
 survival_func = StepFunction(times, survival_proba)
@@ -327,17 +332,17 @@ survival_proba = survival_func(times)
 
 # Stack `N` survival proba vectors to simulate predictions
 # for all individuals.
-n_samples = df.shape[0]
-survival_proba_matrix = np.vstack([survival_proba] * n_samples)
+n_samples = len(event)
+km_survival_proba_matrix = np.vstack([survival_proba] * n_samples)
 
 # Adapt the event and duration to scikit-survival specific
 # numpy array target.
 y = make_target(df["event"], df["duration"])
 
-times, km_brier_scores = brier_score(
+_, km_brier_scores = brier_score(
     survival_train=y,
     survival_test=y,
-    estimate=survival_proba_matrix,
+    estimate=km_survival_proba_matrix,
     times=times,
 )
 
@@ -351,18 +356,60 @@ plt.xlabel("time (days)");
 
 # %% [markdown]
 # Additionnaly, we compute the Integrated Brier Score (IBS) which we will use to rank estimators:
-# $$IBS = \int^{t_{max}}_{t_{min}} BS(t) dt$$
+# $$IBS = \frac{1}{t_{max} - t_{min}}\int^{t_{max}}_{t_{min}} BS(t) dt$$
 
 # %%
-from sksurv.metrics import integrated_brier_score
-
-km_ibs = integrated_brier_score(
+integrated_brier_score(
     survival_train=y,
     survival_test=y,
-    estimate=survival_proba_matrix,
+    estimate=km_survival_proba_matrix,
     times=times,
 )
-km_ibs
+
+# %% [markdown]
+# Finally, let's also introduce the concordance index (C-index). This metric evaluates the discriminative power of a model by comparing pairs of individuals having experienced the event. The C-index of a pair $(i, j)$ is maximized when individual $i$ has experienced the event before $j$ and the estimated risk of $i$ is higher than the one of $j$. 
+#
+# This metric is also comprised between 0 and 1 (higher is better), 0.5 corresponds to a random prediction.
+#
+# <details><summary>Mathematical formulation</summary>
+#     
+# $$\mathrm{C_{index}} = \frac{\sum_{i,j} I(d_i \leq t \space \land \space \delta_i = 1 \space \land \space \mu_i < \mu_j)}{\sum_{i,j} I(d_i \leq t \space \land \space \delta_i = 1)}$$
+#
+# The risk $\mu_i$ can be computed as the integral of the cumulative incidence function (CIF):
+#
+# $$\int^{t_{max}}_{t_{min}} F(t|x_i) dt = \int^{t_{max}}_{t_{min}} 1 - S(t|x_i) dt$$
+#     
+# </details>
+
+# %% [markdown]
+# To compute the C-index of our Kaplan Meier estimates, we assign every individual with the same survival probabilities given by the Kaplan Meier.
+
+# %%
+from sksurv.metrics import concordance_index_censored
+
+
+def get_c_index(event, duration, survival_proba_matrix):
+    if survival_proba_matrix.ndim != 2:
+        raise ValueError(
+            "`survival_probas` must be a 2d array of "
+            "shape (n_samples, times)."
+        )
+    # Cumulative hazard is also known as risk.
+    cumulative_hazard = survival_to_risk_estimate(survival_proba_matrix)
+    metrics = concordance_index_censored(event, duration, cumulative_hazard)
+    return metrics[0]
+
+
+def survival_to_risk_estimate(survival_proba_matrix):
+    return -np.log(survival_proba_matrix + 1e-8).sum(axis=1)
+
+
+# %%
+km_c_index = get_c_index(df["event"], df["duration"], km_survival_proba_matrix)
+km_c_index
+
+# %% [markdown]
+# This is equivalent to a random prediction. Indeed, as our Kaplan Meier is a descriptive statistics, it can't be used to rank individuals predictions.
 
 # %% [markdown]
 # ## IV. Predictive survival analysis
@@ -424,6 +471,15 @@ X_train.shape, X_test.shape
 ### your code here
 transformer = None
 ###
+
+# %%
+from sklearn.compose import make_column_transformer
+from sklearn.preprocessing import OneHotEncoder
+
+transformer = make_column_transformer(
+    (OneHotEncoder(), ["brand", "model_id"]),
+    remainder="passthrough",
+)
 
 # %% [markdown]
 # <details><summary><b><i>Solution</i></b></summary>
@@ -528,19 +584,21 @@ ax = sns.barplot(features, y="feature_name", x="weight", orient="h")
 # Finally, we compute the Brier score for our model.
 
 # %%
-survival_proba_matrix = np.vstack([step_func(times) for step_func in step_funcs])
+from sksurv.metrics import brier_score, integrated_brier_score
+
+cox_survival_proba_matrix = np.vstack([step_func(times) for step_func in step_funcs])
 
 _, cox_brier_scores = brier_score(
     survival_train=y_train,
     survival_test=y_test,
-    estimate=survival_proba_matrix,
+    estimate=cox_survival_proba_matrix,
     times=times,
 )
 
 cox_ibs = integrated_brier_score(
     survival_train=y_train,
     survival_test=y_test,
-    estimate=survival_proba_matrix,
+    estimate=cox_survival_proba_matrix,
     times=times,
 )
 
@@ -554,8 +612,17 @@ ax.set(
 )
 plt.legend();
 
-print(f"CoxPH IBS: {cox_ibs:.4f}")
 print(f"KaplanMeier IBS: {km_ibs:.4f}")
+print(f"CoxPH IBS: {cox_ibs:.4f}")
+
+# %%
+cox_c_index = get_c_index(y_test["event"], y_test["duration"], cox_survival_proba_matrix)
+
+print(f"Kaplan Meier C-index: {km_c_index:.4f}")
+print(f"Cox PH C-index: {cox_c_index:.4f}")
+
+# %% [markdown]
+# We have slightly improved upon the Kaplan Meier.
 
 # %% [markdown]
 # ### IV.2 Random Survival Forest
@@ -588,19 +655,19 @@ ax.set(
 plt.legend();
 
 # %%
-survival_proba_matrix = np.vstack([step_func(times_chunked) for step_func in step_funcs])
+rsf_survival_proba_matrix = np.vstack([step_func(times_chunked) for step_func in step_funcs])
 
 _, rsf_brier_scores = brier_score(
     survival_train=y_train,
     survival_test=y_test,
-    estimate=survival_proba_matrix,
+    estimate=rsf_survival_proba_matrix,
     times=times,
 )
 
 rsf_ibs = integrated_brier_score(
     survival_train=y_train,
     survival_test=y_test,
-    estimate=survival_proba_matrix,
+    estimate=rsf_survival_proba_matrix,
     times=times,
 )
 
@@ -615,9 +682,16 @@ ax.set(
 )
 plt.legend();
 
-print(f"RandomSurvivalForest IBS: {rsf_ibs:.4f}")
-print(f"CoxPH IBS: {cox_ibs:.4f}")
 print(f"KaplanMeier IBS: {km_ibs:.4f}")
+print(f"CoxPH IBS: {cox_ibs:.4f}")
+print(f"RandomSurvivalForest IBS: {rsf_ibs:.4f}")
+
+# %%
+rsf_c_index = get_c_index(y_test["event"], y_test["duration"], rsf_survival_proba_matrix)
+
+print(f"Kaplan Meier C-index: {km_c_index:.4f}")
+print(f"Cox PH C-index: {cox_c_index:.4f}")
+print(f"Random Survival Index C-index: {rsf_c_index:.4f}")
 
 # %% [markdown]
 # ### IV.3 GradientBoostedIBS
@@ -670,11 +744,6 @@ print(f"KaplanMeier IBS: {km_ibs:.4f}")
 
 # %%
 survival_proba_matrix = gb_ibs.predict_survival_function()
-
-# %%
-## TODO
-# Add c-index for tutorial dataset
-# Olivier: play with notebook dataset
 
 # %%
 
