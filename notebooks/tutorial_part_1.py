@@ -18,10 +18,10 @@
 #
 # [I. What is time-censored data?](#I.-What-is-time-censored-data?) <br>
 # [II. Single event survival analysis with Kaplan-Meier](#II.-Single-event-survival-analysis-with-Kaplan-Meier) <br>
-# [III. Competing risks modeling with Nelson Aalen and Aalen Johansen](#III.-Competing-risks-modeling-with-Nelson-Aalen-and-Aalen-Johansen) <br>
-# [IV. Calibration using the integrated brier score (IBS)](#IV.-Calibration-using-the-integrated-brier-score-(IBS)) <br>
-# [V. Predictive survival analysis modeling](V.-Predictive-survival-analysis-modeling) <br>
-# [VI. Competitive risk using our GradientBoostedIBS model](#VI.-Competitive-risk-using-our-GradientBoostedIBS-model) <br>
+# [III. Calibration using the integrated brier score (IBS)](#III.-Calibration-using-the-integrated-brier-score-(IBS)) <br>
+# [IV. Predictive Survival Analysis](#IV.-Predictive-survival-analysis) <br>
+# [V. Competing risks modeling with Aalen-Johanson](#V.-Competing-risks-modeling-with-Aalen-Johanson) <br>
+# [VI. Cumulative incidence function (CIF) using our GradientBoostedCIF](#VI.-Cumulative-incidence-function-(CIF)-using-our-GradientBoostedCIF) <br>
 
 # %% [markdown]
 # ## I. What is time-censored data?
@@ -104,10 +104,6 @@ print(
     f"Ground truth - mean: {true_stats['mean']:.2f} days, "
     f"median: {true_stats['median']:.2f} days"
 )
-
-# %%
-true_stats = df["ground_truth_duration"].apply(["mean"])
-print(f"Ground truth: {true_stats['mean']:.2f} days")
 
 # %% [markdown]
 # We see that none of this naive methods gives a good estimate of the ground truth. A naive regression would try to estimate $\mathbb{E}[T|X]$, where $X$ are our covariates, but we only have access to $Y = \min(T, C)$.
@@ -221,17 +217,6 @@ df
 # What are the limits of this method?
 
 # %%
-brands = df["brand"].unique()
-fig_data = []
-for brand in brands:
-    df_brand = df.loc[df["brand"] == brand]
-    times_, survival_probas_ = kaplan_meier_estimator(df_brand["event"], df_brand["duration"])
-    fig_data.append(
-        go.Scatter(x=times_, y=survival_probas_, name=brand)
-    )
-go.Figure(fig_data)
-
-# %%
 import plotly.graph_objects as go
 
 
@@ -267,7 +252,7 @@ go.Figure(fig_data)
 # </details>
 
 # %% [markdown]
-# Next, we'll study how to add covariates $X$ to our analysis. To do so, we need to introduce our main metric. $S(t)$
+# Next, we'll study how to add covariates $X$ to our analysis.
 
 # %% [markdown]
 # ## III. Calibration using the integrated brier score (IBS)
@@ -332,7 +317,7 @@ survival_proba = survival_func(times)
 
 # Stack `N` survival proba vectors to simulate predictions
 # for all individuals.
-n_samples = len(event)
+n_samples = df.shape[0]
 km_survival_proba_matrix = np.vstack([survival_proba] * n_samples)
 
 # Adapt the event and duration to scikit-survival specific
@@ -359,12 +344,15 @@ plt.xlabel("time (days)");
 # $$IBS = \frac{1}{t_{max} - t_{min}}\int^{t_{max}}_{t_{min}} BS(t) dt$$
 
 # %%
-integrated_brier_score(
+from sksurv.metrics import integrated_brier_score
+
+km_ibs = integrated_brier_score(
     survival_train=y,
     survival_test=y,
     estimate=km_survival_proba_matrix,
     times=times,
 )
+km_ibs
 
 # %% [markdown]
 # Finally, let's also introduce the concordance index (C-index). This metric evaluates the discriminative power of a model by comparing pairs of individuals having experienced the event. The C-index of a pair $(i, j)$ is maximized when individual $i$ has experienced the event before $j$ and the estimated risk of $i$ is higher than the one of $j$. 
@@ -373,11 +361,19 @@ integrated_brier_score(
 #
 # <details><summary>Mathematical formulation</summary>
 #     
-# $$\mathrm{C_{index}} = \frac{\sum_{i,j} I(d_i \leq t \space \land \space \delta_i = 1 \space \land \space \mu_i < \mu_j)}{\sum_{i,j} I(d_i \leq t \space \land \space \delta_i = 1)}$$
+# $$\mathrm{C_{index}} = \frac{\sum_{i,j} I(d_i < d_j \space \land \space \delta_i = 1 \space \land \space \mu_i < \mu_j)}{\sum_{i,j} I(d_i < d_j \space \land \space \delta_i = 1)}$$
 #
-# The risk $\mu_i$ can be computed as the integral of the cumulative incidence function (CIF):
+# Let's introduce the cumulative hazards $\Lambda(t)$, which is the negative log of the survival function $S(t)$:
 #
-# $$\int^{t_{max}}_{t_{min}} F(t|x_i) dt = \int^{t_{max}}_{t_{min}} 1 - S(t|x_i) dt$$
+# $$S(t) = \exp(-\Lambda(t)) = \exp(-\int^t_0 \lambda(u)du)$$
+#     
+# Therefore:
+#     
+# $$\Lambda(t) = -\log(S(t))$$
+#
+# Finally, the risk is obtained by summing over the entire cumulative hazard:
+#     
+# $$\mu_i = \int^{t_{max}}_{t_{min}} \Lambda(t, x_i) dt = \int^{t_{max}}_{t_{min}} - \log (S(t, x_i)) dt$$
 #     
 # </details>
 
@@ -436,9 +432,9 @@ km_c_index
 # The Cox PH model is the canonical way of dealing with covariates $X$ in survival analysis. It computes a log linear regression on the target $Y = \min(T, C)$, and consists in a baseline term $\lambda_0(t)$ and a covariate term with weights $\beta$.
 # $$\lambda(t, x_i) = \lambda_0(t) \exp(x_i^\top \beta)$$
 #
-# Note that here only the baseline depends on time, but we can extend Cox PH to time-dependent covariate $x_i(t)$ and time-dependent weigths $\beta(t)$. We won't cover these extensions in this tutorial.
+# Note that only the baseline depends on the time $t$, but we can extend Cox PH to time-dependent covariate $x_i(t)$ and time-dependent weigths $\beta(t)$. We won't cover these extensions in this tutorial.
 #
-# It is called ***proportional*** hazards, since for two different covariate vectors $x_i$ and $x_j$, their ratio is:
+# This methods is called ***proportional*** hazards, since for two different covariate vectors $x_i$ and $x_j$, their ratio is:
 # $$\frac{\lambda(t, x_i)}{\lambda(t, x_j)} = \frac{\lambda_0(t) e^{x_i^\top \beta}}{\lambda_0(t) e^{x_j^\top \beta}}=\frac{e^{x_i^\top \beta}}{e^{x_j^\top \beta}}$$
 #
 # This ratio is not dependent on time, and therefore the hazards are proportional.
@@ -468,18 +464,9 @@ X_train.shape, X_test.shape
 # *Hint*: Use `sklearn.preprocessing.OneHotEncoder` and `sklearn.compose.make_column_transformer`.
 
 # %%
-### your code here
+### Your code here
 transformer = None
 ###
-
-# %%
-from sklearn.compose import make_column_transformer
-from sklearn.preprocessing import OneHotEncoder
-
-transformer = make_column_transformer(
-    (OneHotEncoder(), ["brand", "model_id"]),
-    remainder="passthrough",
-)
 
 # %% [markdown]
 # <details><summary><b><i>Solution</i></b></summary>
@@ -521,7 +508,7 @@ ax.set(
 plt.legend();
 
 # %%
-df.head()
+X_test.head().reset_index(drop=True)
 
 # %% [markdown]
 # We see that we can get some intuition about the features importance from the first 5 truck-driver pairs and their survival probabilities.
@@ -534,28 +521,16 @@ df.head()
 # *Hint*: You can access an element of a pipeline as simply as `pipeline[idx]`.
 
 # %%
-feature_names = cox_ph[0].get_feature_names_out()
-weights = cox_ph[-1].coef_
-
-features = (
-    pd.DataFrame(dict(
-        feature_name=feature_names,
-        weight=weights,
-    ))
-    .sort_values("weight", ascending=False)
-)
-ax = sns.barplot(features, y="feature_name", x="weight", orient="h")
-ax.set_title("Cox PH feature importance of $\lambda(t)$");
-
-# %%
 ### Your code here
-features_names = []
+feature_names = []
 weight = []
 ###
 
-feature = pd.DataFrame(
-    feature_name=feature_names,
-    weigth=weigth
+features = pd.DataFrame(
+    dict(
+        feature_name=feature_names,
+        weight=weight,
+    )
 )
 ax = sns.barplot(features, y="feature_name", x="weight", orient="h")
 
@@ -586,20 +561,25 @@ ax = sns.barplot(features, y="feature_name", x="weight", orient="h")
 # %%
 from sksurv.metrics import brier_score, integrated_brier_score
 
-cox_survival_proba_matrix = np.vstack([step_func(times) for step_func in step_funcs])
+test_times = np.linspace(
+    y_test["duration"].min(),
+    y_test["duration"].max() - 1,
+    num=100,
+)
+cox_survival_proba_matrix = np.vstack([step_func(test_times) for step_func in step_funcs])
 
 _, cox_brier_scores = brier_score(
     survival_train=y_train,
     survival_test=y_test,
     estimate=cox_survival_proba_matrix,
-    times=times,
+    times=test_times,
 )
 
 cox_ibs = integrated_brier_score(
     survival_train=y_train,
     survival_test=y_test,
     estimate=cox_survival_proba_matrix,
-    times=times,
+    times=test_times,
 )
 
 fig, ax = plt.subplots()
@@ -616,7 +596,11 @@ print(f"KaplanMeier IBS: {km_ibs:.4f}")
 print(f"CoxPH IBS: {cox_ibs:.4f}")
 
 # %%
-cox_c_index = get_c_index(y_test["event"], y_test["duration"], cox_survival_proba_matrix)
+cox_c_index = get_c_index(
+    y_test["event"],
+    y_test["duration"],
+    cox_survival_proba_matrix,
+)
 
 print(f"Kaplan Meier C-index: {km_c_index:.4f}")
 print(f"Cox PH C-index: {cox_c_index:.4f}")
@@ -637,16 +621,12 @@ rsf = make_pipeline(
 rsf.fit(X_train, y_train)
 
 # %%
-times_chunked = times.copy()
-times_chunked[-1] -= 1
-
-# %%
 step_funcs = rsf.predict_survival_function(X_test)
 
 fig, ax = plt.subplots()
 for idx, step_func in enumerate(step_funcs[:5]):
-    survival_proba = step_func(times_chunked)
-    ax.plot(times_chunked, survival_proba, label=idx)
+    survival_proba = step_func(test_times)
+    ax.plot(test_times, survival_proba, label=idx)
 ax.set(
     title="Survival probabilities $\hat{S}(t)$ of Random Survival Forest",
     xlabel="time (days)",
@@ -655,26 +635,28 @@ ax.set(
 plt.legend();
 
 # %%
-rsf_survival_proba_matrix = np.vstack([step_func(times_chunked) for step_func in step_funcs])
+rsf_survival_proba_matrix = np.vstack(
+    [step_func(test_times) for step_func in step_funcs]
+)
 
 _, rsf_brier_scores = brier_score(
     survival_train=y_train,
     survival_test=y_test,
     estimate=rsf_survival_proba_matrix,
-    times=times,
+    times=test_times,
 )
 
 rsf_ibs = integrated_brier_score(
     survival_train=y_train,
     survival_test=y_test,
     estimate=rsf_survival_proba_matrix,
-    times=times,
+    times=test_times,
 )
 
 fig, ax = plt.subplots()
-ax.plot(times, rsf_brier_scores, label="RandomSurvivalForest")
-ax.plot(times, cox_brier_scores, label="CoxPH")
-ax.plot(times, km_brier_scores, label="KaplanMeier")
+ax.plot(test_times, rsf_brier_scores, label="RandomSurvivalForest")
+ax.plot(test_times, cox_brier_scores, label="CoxPH")
+ax.plot(test_times, km_brier_scores, label="KaplanMeier")
 ax.set(
     title="Brier Scores",
     xlabel="time (days)",
@@ -689,9 +671,9 @@ print(f"RandomSurvivalForest IBS: {rsf_ibs:.4f}")
 # %%
 rsf_c_index = get_c_index(y_test["event"], y_test["duration"], rsf_survival_proba_matrix)
 
-print(f"Kaplan Meier C-index: {km_c_index:.4f}")
-print(f"Cox PH C-index: {cox_c_index:.4f}")
 print(f"Random Survival Index C-index: {rsf_c_index:.4f}")
+print(f"Cox PH C-index: {cox_c_index:.4f}")
+print(f"Kaplan Meier C-index: {km_c_index:.4f}")
 
 # %% [markdown]
 # ### IV.3 GradientBoostedIBS
@@ -703,33 +685,33 @@ from model_selection.wrappers import PipelineWrapper
 
 gb_model = make_pipeline(
     transformer,
-    YASGBTRegressor(max_depth=5),
+    YASGBTRegressor(n_iter=20, learning_rate=0.2),
 )
 gb_model = PipelineWrapper(gb_model)
 gb_model.fit(X_train, y_train, times)
 
 # %%
-survival_proba_matrix = gb_model.predict_survival_function(X_test, times)
+gbcif_survival_proba_matrix = gb_model.predict_survival_function(X_test, times)
 
-_, gb_model_brier_scores = brier_score(
+_, gbcif_brier_scores = brier_score(
     survival_train=y_train,
     survival_test=y_test,
-    estimate=survival_proba_matrix,
-    times=times,
+    estimate=gbcif_survival_proba_matrix,
+    times=test_times,
 )
 
-gb_model_ibs = integrated_brier_score(
+gbcif_ibs = integrated_brier_score(
     survival_train=y_train,
     survival_test=y_test,
-    estimate=survival_proba_matrix,
-    times=times,
+    estimate=gbcif_survival_proba_matrix,
+    times=test_times,
 )
 
 fig, ax = plt.subplots()
-ax.plot(times, gb_model_brier_scores, label="GradientBoostedIBS")
-ax.plot(times, rsf_brier_scores, label="RandomSurvivalForest")
-ax.plot(times, cox_brier_scores, label="CoxPH")
-ax.plot(times, km_brier_scores, label="KaplanMeier")
+ax.plot(test_times, gbcif_brier_scores, label="GradientBoostedCIF")
+ax.plot(test_times, rsf_brier_scores, label="RandomSurvivalForest")
+ax.plot(test_times, cox_brier_scores, label="CoxPH")
+ax.plot(test_times, km_brier_scores, label="KaplanMeier")
 ax.set(
     title="Brier Scores",
     xlabel="time (days)",
@@ -737,278 +719,27 @@ ax.set(
 )
 plt.legend();
 
-print(f"GradientBoostedIBS IBS: {gb_model_ibs:.4f}")
+print(f"GradientBoostedCIF IBS: {gbcif_ibs:.4f}")
 print(f"RandomSurvivalForest IBS: {rsf_ibs:.4f}")
 print(f"CoxPH IBS: {cox_ibs:.4f}")
 print(f"KaplanMeier IBS: {km_ibs:.4f}")
 
 # %%
-survival_proba_matrix = gb_ibs.predict_survival_function()
+gbcif_c_index = get_c_index(y_test["event"], y_test["duration"], gbcif_survival_proba_matrix)
 
-# %%
-
-# %%
-
-# %%
-
-# %%
-
-# %%
-fig, ax = plt.subplots()
-ax.plot(
-    times,
-    np.exp(-cumulative_hazard),
-    label="$np.exp(-\hat{\Lambda}(t))$",
-    linestyle="--",
-);
-ax.plot(
-    times,
-    survival_proba,
-    label="$\hat{S}(t)$",
-    linestyle="-.",
-)
-ax.set(
-    title="Survival probability",
-    xlabel="time (days)"
-)
-plt.legend();
-
-# %%
-## On peut réutiliser les quantités au dessus pour chaque event, sauf la survie cause spécifique qui n'a pas de sens.
-## Ajouter la motivation
-
-# %%
-import pandas as pd
-
-factory_df = pd.read_parquet("factory_dataset.parquet")
-factory_df[["duration", "event"]]
-
-# %%
-from lifelines import AalenJohansenFitter
-
-for k in [1, 2, 3]:
-    ajf = AalenJohansenFitter(calculate_variance=True)
-    ajf.fit(factory_df["duration"], factory_df["event"], event_of_interest=k)
-    ajf.plot(label=f"e{k}")
-plt.title("$CIF_{Aalen\;Johansen}$");
+print(f"GradientBoostedCIF C-index: {gbcif_c_index:.4f}")
+print(f"Random Survival Index C-index: {rsf_c_index:.4f}")
+print(f"Cox PH C-index: {cox_c_index:.4f}")
+print(f"Kaplan Meier C-index: {km_c_index:.4f}")
 
 # %% [markdown]
-# We now illustrate that approximating the cause-specific survival function $S_k(t)$ by censoring all events that are different from $k$ and estimating the survival function $\hat{S}_k(t)$ leads to a upward bias of the incidence probability.
-#
-# In other words, $\hat{S}_k(t) \neq S_k(t)$, when we build $\hat{S}_k(t)$ by censoring all events that are not $k$.
+# ## V. Competing risks modeling with Aalen-Johanson
 
 # %%
-fig, ax = plt.subplots()
-
-for k in [1, 2, 3]:
-    times, survival_proba = kaplan_meier_estimator(
-        factory_df["event"] == k,  # we censor all events != k
-        factory_df["duration"],
-    )
-    
-    ajf = AalenJohansenFitter(calculate_variance=True)        
-    ajf.fit(factory_df["duration"], factory_df["event"], event_of_interest=k)
-    
-    # Select the times values of ajf that are the closest to
-    # the kaplan meier times to compute their difference
-    ajf_times = ajf.cumulative_density_.index
-    idxs = np.searchsorted(ajf_times, times)
-    ajf_cif = ajf.cumulative_density_.iloc[idxs].values.ravel()
-    
-    biased_cif = 1 - survival_proba
-    cif_diff = biased_cif -  ajf_cif
-    ax.step(times, cif_diff, label=f"e{k}")
-
-plt.title("(1 - $\hat{S}_k) - CIF_{Aalen\;Johansen}$");
-plt.legend();
-
-
-# %% [markdown]
-# Instead, we can derive the Aalen Johansen CIF from the cause-specific Nelson Aalen cumulative hazard $\Lambda_k(t)$, by computing the global survival probability $S(t)$, and applying equation:
-#
-# $$F_k(t)=\int^t_0 \lambda_k(u)S(u)du$$
-
-# %% [markdown]
-# **// Can be completed as an exercice //**
-
-# %%
-def get_cif_from_cumulative_hazards(survival_proba, cumulative_hazard):
-    hazard = np.diff(cumulative_hazard)
-    event_density = hazard * survival_proba[1:]
-    cif = event_density.cumsum()
-    return cif
-
-
-# %%
-_, global_survival_proba = kaplan_meier_estimator(
-    factory_df["event"] != 0,
-    factory_df["duration"],
-)
-
-fig, ax = plt.subplots()
-for k in [1, 2, 3]:
-    times, cumulative_hazard = nelson_aalen_estimator(
-        factory_df["event"] == k,  # we censor all events != k
-        factory_df["duration"],
-    )
-    cif = get_cif_from_cumulative_hazards(global_survival_proba, cumulative_hazard)
-    
-    ajf = AalenJohansenFitter(calculate_variance=True)
-    ajf.fit(factory_df["duration"], factory_df["event"], event_of_interest=k)
-        
-    # Select the times values of ajf that are the closest to
-    # the nelson aalen times to compute their difference
-    ajf_times = ajf.cumulative_density_.index
-    idxs = np.searchsorted(ajf_times, times)
-    ajf_cif = ajf.cumulative_density_.iloc[idxs].values.ravel()
-    
-    cif_diff = cif - ajf_cif[1:]
-    ax.step(times[1:], cif_diff, label=f"e{k}")
-
-plt.title("$\hat{CIF} - CIF_{Aalen\;Johansen}$");
-plt.legend();
-
-# %% [markdown]
-# We see that the differences are small compared to using the cause specific survival function to compute the CIF.
-
-# %% [markdown]
-# ## III. Competing risks modeling with Nelson-Aalen and Aalen Johansen
-#
-# Real-world survival analysis problem often have multiple-events of interest whose probability are dependent. If these events are comparably represented, we need to estimate them jointly to avoid bias.
-#
-# In our dataset, we have 3 types of failures..., someone in charge of ops would focus on this events, while supply manager will ...
-#
-# ### III.1 Nelson-Aalen
-#
-# We now need to introduce new quantities:
-#
-#
-
-# %%
-from sksurv.nonparametric import nelson_aalen_estimator
-
-times, cumulative_hazard = nelson_aalen_estimator(y["event"], y["duration"])
-fig, ax = plt.subplots()
-ax.step(times, cumulative_hazard);
-ax.set(
-    title="Cumulative hazards $\hat{\Lambda}(t)$",
-    xlabel="time (days)",
-    ylabel="$\hat{\Lambda}(t)$",
-);
-
-# %% [markdown]
-# ### III.2 Aalen-Johanson
-#
-#
-# **Cumulative Incidence Function**
-#
-# $\forall k \in [1, K]:$
-#
-# $$F_k(t)=\int^t_0 \lambda_k(u)S(u)du = 1 - S_k(t)$$
-#
-# where $\lambda_k$ is the cause-specific hazard for the event k, defined as:
-#
-# $$\lambda_k(t)=\lim_{dt\rightarrow 0}\frac{P(t \leq T < t + dt, e=k)}{S(t)dt}$$
-#
-# and $S_k(t)$ is the cause specific survival-function: 
-#
-# $$S_k(t) = P(T > t, e=k)=e^{-\Lambda_k(t)}$$
-#
-# which leads to:
-#
-# $$S(t)=\prod_k S_k(t) = e^{-\sum_k \Lambda_k(t)}$$
-#
-# **Aalen Johanson** estimates both the global survival function $\hat{S}(t)$ and the cause-specific hazard $\hat{\lambda_k}(t)$ to infer the CIF $\hat{F}_k(t)$:
-#
-# $$\begin{align}
-# \hat{\lambda}_k(t_i)&=\frac{d_{k,i}}{n_i} \\
-# \hat{S}(t)&=\prod_{i:t_i\leq t} (1 - \frac{d_i}{n_i})=\prod_{i:t_i\leq t} (1 - \sum_k\hat{\lambda}_{k}(t_i))
-# \end{align}
-# $$
-#
-# Then:
-#
-# $$\hat{F}_k(t)=\sum_{i:t_i\leq t} \hat{\lambda}_k(t_i) \hat{S}(t_{i-1})$$
-#
-#
-# We will now use our factory dataset with competitive risk.
-
-# %%
-## Créer un any-failure et un cause-specific dataset (renaming)
-## Dans la vraie vie une usine avec 10k pannes est probablement problématique
-## Nouvelle piste: Tous nos estimateurs se dégradent en baissant la taille du dataset, robustesse à la petite taille?
-## Incertitudes plus proprement?
 
 # %%
 
 # %% [markdown]
-# ## V. Predictive survival analysis modeling
+# ## VI. Cumulative incidence function (CIF) using our GradientBoostedCIF
 
 # %%
-
-# %% [markdown]
-# ## VI. Competitive risk using our GradientBoostedIBS model
-
-# %%
-
-# %%
-
-# %%
-
-# %%
-factory_df["event"].value_counts().sort_index().plot.bar(rot=0);
-
-# %%
-hists = [
-    factory_df.loc[factory_df["event"] == event]["duration"]
-    for event in range(4)
-]
-labels = [f"$e_{idx}$" for idx in range(4)]
-fig, ax = plt.subplots()
-ax.hist(hists, bins=100, stacked=True, label=labels);
-ax.set(
-    title="Stacked duration distributions",
-    xlabel="time (days)",
-    ylabel="Total",
-)
-plt.legend();
-
-# %%
-from lifelines import AalenJohansenFitter
-
-for event_k in [1, 2, 3]:
-    ajf = AalenJohansenFitter(calculate_variance=True)
-    ajf.fit(factory_df["duration"], factory_df["event"], event_of_interest=event_k)
-    ajf.plot(label=f"e{event_k}")
-plt.title("$CIF_{Aalen\;Johansen}$");
-
-# %%
-fig, ax = plt.subplots()
-for event_k in [1, 2, 3]:
-    times_k, survival_proba_k = kaplan_meier_estimator(
-        factory_df["event"] == event_k,
-        factory_df["duration"],
-    )
-    ax.step(km_x_, km_y_, label=f"e{event}")
-plt.title("Kaplan Meier $\hat{S}(t)$");
-plt.legend();
-
-# %% [markdown]
-# References
-#
-# https://onlinelibrary.wiley.com/doi/epdf/10.1002/sim.2712
-
-# %% [markdown]
-# **Cumulative Hazard**
-#
-# $$\Lambda(t)=\int^t_0 \lambda(u) du$$
-#
-# Then:
-#
-# $$S(t)=e^{-\Lambda(t)}$$
-#
-#
-# Like **Kaplan Meier** for the survival function, **Nelson Aalen** is an estimator of the cumulative hazard:
-#
-# $$\hat{\Lambda}(t)=\sum_{i:t_i\leq t} \frac{d_i}{n_i}$$
-#
