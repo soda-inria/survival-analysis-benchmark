@@ -52,79 +52,108 @@
 
 # ## Drivers and truck properties
 
-# +
 import pandas as pd
 import numpy as np
 from matplotlib import pyplot as plt
 import seaborn as sns
 sns.set_style("darkgrid")
 
-rng = np.random.RandomState(42)
-# -
 
 # We consider 10,000 pairs (driver, truck) with constant features. The period span on 10 years.
 
-N = 10_000
+n_datapoints = 10_000
 total_years = 10
 total_days = total_years * 365
 
-# ### Driver training
+# ### Sampling driver / truck pairs
 #
-# Across the fleet, 1/3 of drivers have little to no experience, another 1/3 have prior hands-on training and the last 1/3 has had a formal training on all equipments for the handling of emergency situations. We distinguish their skills as:
+# Let's assume that drivers have different experience and training. We summarize this information in a "skill" level with values in the `[0.2-1.0]` range. We make the simplifying assumpting that the skill of the drivers do not evolve during the duration of the experiment
+#
+# Furthermore each driver has a given truck model and we assume that drivers do not change truck model over that period.
+#
+# We further assume that each (driver, truck) pair has a specific usage rate that stays constant over time (for the sake of simplicity). Let's assume that usage rates are distributed as a mixture of Gaussians.
 
 # +
-driver_skills = [.2, .5, .95]
+from scipy.stats import norm
 
-df = pd.DataFrame(
-    dict(
-        driver_skills=rng.choice(driver_skills, size=N)
+def sample_usage_weights(n_datapoints, rng):
+    u_mu_1, u_sigma_1 = .5, .08
+    u_mu_2, u_sigma_2 = .8, .05
+
+    rates_1 = norm.rvs(
+        u_mu_1, u_sigma_1, size=n_datapoints, random_state=rng
     )
+    rates_2 = norm.rvs(
+        u_mu_2, u_sigma_2, size=n_datapoints, random_state=rng
+    )
+    usage_mixture_idxs = rng.choice(2, size=n_datapoints, p=[1/3, 2/3])    
+    
+    return np.where(usage_mixture_idxs, rates_1, rates_2).clip(0, 1)
+
+
+# +
+truck_model_names = ["RA", "C1", "C2", "RB", "C3"]
+
+def sample_driver_truck_pairs(n_datapoints, random_seed=None):
+    rng = np.random.RandomState(random_seed)
+    df = pd.DataFrame(
+        {
+            "driver_skill": rng.uniform(low=0.2, high=1.0, size=n_datapoints),
+            "truck_model": rng.choice(truck_model_names, size=n_datapoints),
+            "usage_rate": sample_usage_weights(n_datapoints, rng),
+        }
+    )
+    return df
+
+sample_driver_truck_pairs(n_datapoints, random_seed=0)
+# -
+
+fig, axes = plt.subplots(ncols=3, figsize=(12, 3))
+df = sample_driver_truck_pairs(n_datapoints, random_seed=0)
+df["usage_rate"].plot.hist(bins=30, xlabel="usage_rate", ax=axes[0])
+df["driver_skill"].plot.hist(bins=30, xlabel="driver_skill", ax=axes[1])
+df["truck_model"].value_counts().plot.bar(ax=axes[2]);
+
+# ### Truck models, Brands, UX, Material and Assembly quality
+#
+
+# Let's imagine that the assembly quality only depends on the supplier brand. There are two brands on the market, Robusta (R) and Cheapz (C).
+
+brand_quality = pd.DataFrame({
+    "brand": ["Robusta", "Cheapz"],
+    "assembly_quality": [0.95, 0.30],
+})
+brand_quality
+
+# The models have user controls with different UX and driving assistance that has improved over the years. On the other hands the industry has progressively evolved to use lower quality materials over the years.
+#
+# Each truck model come from a specific brand:
+
+# +
+trucks = pd.DataFrame(
+    {
+        "truck_model": truck_model_names,
+        "brand": [
+            "Robusta" if m.startswith("R") else "Cheapz"
+            for m in truck_model_names
+        ],
+        "ux": [.2, .5, .7, .9, 1.0],
+        "material_quality": [.95, .92, .90, .88, .85],
+    }
+).merge(brand_quality)
+
+trucks
+# -
+
+# We can easily augment our truck driver pairs with those extra metadata by using a join:
+
+(
+    sample_driver_truck_pairs(10, random_seed=0)
+    .merge(trucks, on="truck_model")
 )
-df.head()
-# -
-
-# ### Assembly quality
-#
-# Let's imagine that the assembly quality depends on the supplier brand. There are two brands on the market, Robusta (R) and Cheapz (C). Cheapz is cheaper but has an assembly quality that is less reliable:
-#
-# $$q_{R}=0.95 \\ q_{C} = 0.30$$
-#
-# with the assembly quality $q \in [0, 1]$
-#
-# Let's say that Robusta and Cheapz have an equal share of the market:
-
-q_r, q_c = 0.95, 0.30
-
-fig, ax = plt.subplots(figsize=(4, 4))
-ax.bar(["Robusta", "Cheapz"], height=[q_r, q_c]);
-ax.set_title("Assembly quality");
 
 # +
-df["brand"] = pd.Series(["Robusta"] * (N//2) + ["Cheapz"] * (N//2))
-
-assembly_quality = np.hstack([
-    np.full(shape=N//2, fill_value=q_r),
-    np.full(shape=N//2, fill_value=q_c),
-])
-df["assembly_quality"] = assembly_quality
-
-df.head()
-# -
-
-# ### UX
-#
-# Both brands produce 5 models with similar UX, depending on the year there were designed. Older trucks are often less intuitive and trickier to use, so the UX is improving for each new generation.
-#
-# $$
-# \mathrm{UX}_{1}=0.2 \\
-# \mathrm{UX}_{2}=0.5 \\
-# \mathrm{UX}_{3}=0.7 \\
-# \mathrm{UX}_{4}=0.9 \\
-# \mathrm{UX}_{5}=1.0 \\
-# $$
-
-# +
-ux_levels = [.2, .5, .7, .9, 1.0]
+ux_levels = 
 labels = [f"Model {idx}" for idx in range(1, len(ux_levels)+1)]
 ux_models = dict(zip(ux_levels, labels))
 
@@ -139,93 +168,22 @@ df["model_id"] = pd.Series(ux).map(ux_models)
 df["ux"] = ux
 df.head()
 
-# ### Material quality
+
+# ## Types of Failures
 #
-# Both brands also use similar alloys and plastics, however newer machines are often built with cheaper components, so that the more recent the model, the lower the overall material quality:
-#
-# $$
-# m_1 = 0.95 \\
-# m_2 = 0.92 \\
-# m_3 = 0.90 \\
-# m_4 = 0.88 \\
-# m_5 = 0.85 \\
-# $$
-
-# +
-material_quality = [.95, .92, .90, .88, .85]
-material_models = dict(zip(labels, material_quality))
-
-fig, ax = plt.subplots()
-palette = sns.color_palette("Blues", n_colors=5)[::-1]
-ax.bar(labels, height=material_quality, color=palette)
-ax.set_title("Material quality by model");
-# -
-
-df["materials"] = df["model_id"].map(material_models)
-df.head()
-
-# ### Usage rate
-#
-# Finally, depending on their position in the production line but independently to their model, each machine has a specific usage rate, that will linearly impact each of the 3 hazards. We can imagine a bimodal distribution of the usage, with some machines being used almost continuously while some others are used in batches.
-#
-# $$
-# u_1 \sim \mathcal{N}(0.3, 0.05) \\
-# u_2 \sim \mathcal{N}(0.8, 0.08) \\
-# $$
-#
-# And then the final random variable is a gaussian mixture of the two:
-#
-# $$u = \sum_{i=1}^2 \pi_i u_i = \frac{1}{3} u_1 + \frac{2}{3} u_2$$
-
-# +
-from scipy.stats import norm
-
-u_mu_1, u_sigma_1 = .5, .05
-u_mu_2, u_sigma_2 = .8, .08
-usage_params = [(u_mu_1, u_sigma_1 ), (u_mu_2, u_sigma_2)]
-
-usage_weights = np.array([1/3, 2/3])
-usage_mixture_idxs = rng.choice(len(usage_weights), size=N, p=usage_weights)
-
-usage_rate = np.hstack([
-    norm.rvs(*usage_params[idx], random_state=rng)
-    for idx in usage_mixture_idxs
-])
-
-fig, ax = plt.subplots()
-ax.hist(usage_rate, density=True, bins=30)
-
-x = np.linspace(0, 1, N)
-usage_rate_pdf = np.zeros(x.shape[0])
-for (u_mu, u_sigma), w in zip(usage_params, usage_weights):
-    usage_rate_pdf += norm.pdf(x, loc=u_mu, scale=u_sigma) * w
-
-ax.plot(x, usage_rate_pdf)
-ax.set_title("Usage rate");
-# -
-
-df["usage_rate"] = usage_rate
-
-df
-
-df.sample(frac=1e-3)
-
-
-# ## Assembly failure $e_1$
-#
-# Let $\lambda_1$ be the hazard related to the event $e_1$. We model the $\lambda_1$ with the [Weibull distribution](https://en.wikipedia.org/wiki/Weibull_distribution):
-#
-# $$f(x, s, k)=\begin{cases}\frac{k}{s}(\frac{x}{s})^{k-1}e^{-(x/s)^k} & \mathrm{if}\; x \geq 0 \\ 0 & \mathrm{o.w.}\end{cases}$$
-
-# ## TODO: use the Weibull hazard function instead of the PDF!
+# We assume all types of failures follow a [Weibull distribution](https://en.wikipedia.org/wiki/Weibull_distribution) with varying shape parameters $k$:
 #
 # - k < 1: is good to model manufacturing defects, "infant mortality" and similar, monotonically decreasing hazards;
 # - k = 1: constant hazards (exponential distribution): random events not related to time (e.g. driving accidents);
 # - k > 1: "aging" process, wear and tear... monotonically increasing hazards.
+#
+# The hazard function can be implemented has:
 
 def weibull_hazard(t, k=1., s=1., t_shift=0.1):
     # See: https://en.wikipedia.org/wiki/Weibull_distribution
     # t_shift is a trick to avoid avoid negative powers at t=0 when k < 1.
+    # t_shift could be interpreted at the operation time at the factory for
+    # quality insurance checks for instance.
     t = t + t_shift
     return (k / s) * (t / s) ** (k - 1.)
 
@@ -245,57 +203,13 @@ ax.set(
 plt.legend();
 # -
 
-# We plot the Weibull distribution for a fix parameter $s$ for different values of $k$:
-
-# +
-from scipy.stats import weibull_min
-
-fig, ax = plt.subplots()
-for k in [.5, 1, 1.5, 5]:
-    x = np.linspace(
-        weibull_min.ppf(0.01, k),
-        weibull_min.ppf(0.99, k),
-        1000,
-    )
-    y = weibull_min.pdf(x, k, loc=0, scale=1)
-    ax.plot(x, y, alpha=0.6, label=f"$k={k}, s=1$");
-ax.set(
-    title="Weibull pdf",
-    xlim=[0, 2.5],
-    ylim=[0, 2.5],
-);
-plt.legend();
-# -
-
-# We plot the Weibull distribution again, this time fixing $k$ and for different $s$:
-
-# +
-from scipy.stats import weibull_min
-
-k = 1
-fig, ax = plt.subplots()
-for s in [.5, 1, 1.5, 5]:
-    t = np.linspace(
-        weibull_min.ppf(0.01, k, scale=s),
-        weibull_min.ppf(0.99, k, scale=s),
-        1000,
-    )
-    y = weibull_min.pdf(t, k, loc=0, scale=s)
-    ax.plot(t, y, alpha=0.6, label=f"$k={k}, s={s}$");
-ax.set(
-    title="Weibull pdf",
-    xlim=[0, 2.5],
-    ylim=[0, 2.5],
-);
-plt.legend();
-# -
-
-# This looks like the shape of the hazards we would like to have. So, we need a fix shape parameter $k$ and a scale $\lambda$ that varies according to our couple (truck, driver).
+# ## Assembly failure $e_1$
+#
+# Let $\lambda_1$ be the hazard related to the event $e_1$. We model the $\lambda_1$ with Weibull hazards with k << 1.
 
 # Therefore for the assembly failure $e_1$,
 # $$s \propto \mathrm{assembly\; quality} \times (1 - \mathrm{usage\; rate})$$
-# since
-# $$\lambda_1 \sim \mathrm{Weibull}(s, k)$$
+#
 
 df["e_1_s"] = (1 - df["assembly_quality"]) * df["usage_rate"]
 plt.hist(df["e_1_s"], bins=30);
@@ -309,11 +223,6 @@ df["e_1_s"].values.min()
 
 # +
 t = np.linspace(0, total_years, total_days)
-
-# hazards_1 = np.vstack([
-#     weibull_min.pdf(2*t, 1, loc=0, scale=1) / (800 * l)
-#     for l in df["e_1_s"].values
-# ])
 
 hazards_1 = np.vstack([
     weibull_hazard(t, k=0.0003, s=1.) * s for s in df["e_1_s"].values
@@ -546,7 +455,7 @@ ax.hist(hists, bins=50, stacked=True, label=labels);
 ax.set(title="Stacked combined duration distributions")
 plt.legend();
 
-3000 / 365
+3500 / 365
 
 (
     df[observed_variables_and_target]
@@ -572,7 +481,8 @@ ax.plot(h_3, label="$\lambda_3$")
 ax.set(
     title="$\lambda_{\{1,2,3\}}(t)$ for individual 1",
     xlabel="time (days)",
-    ylabel="$\lambda(t)$"
+    ylabel="$\lambda(t)$",
+    ylim=[-1e-3, 1e-2],
 );
 plt.legend();
 
