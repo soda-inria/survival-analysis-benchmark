@@ -143,14 +143,22 @@ trucks = pd.DataFrame(
 ).merge(brand_quality)
 
 trucks
+
+
 # -
 
 # We can easily augment our truck driver pairs with those extra metadata by using a join:
 
-(
-    sample_driver_truck_pairs(10, random_seed=0)
-    .merge(trucks, on="truck_model")
-)
+# +
+def sample_driver_truck_pairs_with_metadata(n_datapoints, random_seed):
+    return (
+        sample_driver_truck_pairs(
+            n_datapoints, random_seed=random_seed
+        )
+        .merge(trucks, on="truck_model")
+    )
+
+sample_driver_truck_pairs_with_metadata(10, random_seed=0)
 
 # +
 ux_levels = 
@@ -177,20 +185,20 @@ df.head()
 # - k = 1: constant hazards (exponential distribution): random events not related to time (e.g. driving accidents);
 # - k > 1: "aging" process, wear and tear... monotonically increasing hazards.
 #
-# The hazard function can be implemented has:
+# The hazard function can be implemented as:
 
 def weibull_hazard(t, k=1., s=1., t_shift=0.1):
     # See: https://en.wikipedia.org/wiki/Weibull_distribution
     # t_shift is a trick to avoid avoid negative powers at t=0 when k < 1.
     # t_shift could be interpreted at the operation time at the factory for
-    # quality insurance checks for instance.
+    # quality assurance checks for instance.
     t = t + t_shift
     return (k / s) * (t / s) ** (k - 1.)
 
 
 # +
 fig, ax = plt.subplots()
-hazards_ylim = [-0.001, .05]
+hazards_ylim = [-0.001, .02]
 
 t = np.linspace(0, 10., 1000)
 for k, s in [(0.003, 1.), (1, 1e2), (7., 15.)]:
@@ -208,43 +216,40 @@ plt.legend();
 # Let $\lambda_1$ be the hazard related to the event $e_1$. We model the $\lambda_1$ with Weibull hazards with k << 1.
 
 # Therefore for the assembly failure $e_1$,
-# $$s \propto \mathrm{assembly\; quality} \times (1 - \mathrm{usage\; rate})$$
 #
-
-df["e_1_s"] = (1 - df["assembly_quality"]) * df["usage_rate"]
-plt.hist(df["e_1_s"], bins=30);
-plt.title("Assembly failure $s$ coefficient distribution");
-
-df
-
-# We create a time vector spanning 10 years, binned for each day. We also scale the Weibull distribution by 100 to obtain realistic daily hazards.
-
-df["e_1_s"].values.min()
+# $$\lambda_1 \propto \mathrm{usage\; rate} \times (1 - \mathrm{assembly\; quality})$$
+#
 
 # +
 t = np.linspace(0, total_years, total_days)
 
-hazards_1 = np.vstack([
-    weibull_hazard(t, k=0.0003, s=1.) * s for s in df["e_1_s"].values
-])
+def assembly_hazards(df, t):
+    baseline = weibull_hazard(t, k=0.0003)
+    s = (df["usage_rate"] * (1 - df["assembly_quality"])).to_numpy()
+    return s.reshape(-1, 1) * baseline.reshape(1, -1)
 
 fig, ax = plt.subplots()
-for hazards_1_ in hazards_1[:5]:
-    ax.plot(t, hazards_1_)
-for hazards_1_ in hazards_1[-5:]:
-    ax.plot(t, hazards_1_)
+df = sample_driver_truck_pairs_with_metadata(5, random_seed=0)
+hazards_1 = assembly_hazards(df, t)
+for idx, h1 in enumerate(hazards_1):
+    ax.plot(t, h1, label=f"Pair #{idx}")
 ax.set(
     title="$\lambda_1$ hazard for some (driver, truck) pairs",
     xlabel="time (years)",
     ylabel="$\lambda_1$",
-    ylim=hazards_ylim,
-);
+)
+plt.legend()
+df
+# -
+
+# This seems to indicate that drivers of Cheapz trucks have a significantly larger risk to run into a manufacturing defect during the first 2 years. Let's confirm this by computing the mean hazards per brands on a a much larger sample:
 
 # +
-brands = df["brand"].unique()
+df = sample_driver_truck_pairs_with_metadata(n_datapoints, random_seed=0)
+hazards_1 = assembly_hazards(df, t)
 
 fig, ax = plt.subplots()
-for brand in brands:
+for brand in df["brand"].unique():
     mask_brand = df["brand"] == brand
     mean_hazards = hazards_1[mask_brand].mean(axis=0)
     ax.plot(t, mean_hazards, label=brand)
@@ -252,40 +257,40 @@ ax.set(
     title="Average $\lambda_1(t)$ hazard by brand",
     xlabel="time (years)",
     ylabel="$\lambda_1$",
-    ylim=hazards_ylim,
 )
 plt.legend();
+
+
 # -
 
 # ## Operation failure $e_2$
 #
 # We consider the operation hazard to be a constant modulated by driver skills, UX and usage rate.
 
-df["e_2_coeff"] = 0.005 * ((1 - df["driver_skills"]) * (1 - df["ux"]) + .001) * df["usage_rate"]
-plt.hist(df["e_2_coeff"], bins=30);
-plt.title("$e_2$ coeff");
+# +
+def operational_hazards(df, t):
+    # Weibull hazards with k = 1 is just a constant over time:
+    baseline = np.full(shape=t.shape[0], fill_value=0.005)
+    s = (
+        ((1 - df["driver_skill"]) * (1 - df["ux"]) + .001) * df["usage_rate"]
+    ).to_numpy()
+    return s.reshape(-1, 1) * baseline.reshape(1, -1)
 
-# The baseline is one failure every 5 years, which we multiply be the $e_2$ coeff.
 
-e_2_coeff = df["e_2_coeff"]
-hazards_2 = np.vstack([
-    np.full_like(t, e_2_coeff_)
-    for e_2_coeff_ in e_2_coeff
-])
+hazards_2 = operational_hazards(df, t)
 
 # +
-models = sorted(df["model_id"].unique())
+models = sorted(df["truck_model"].unique())
 
 fig, ax = plt.subplots()
 for model in models:
-    mask_model = df["model_id"] == model
+    mask_model = df["truck_model"] == model
     mean_hazards = hazards_2[mask_model].mean(axis=0)
     ax.plot(t, mean_hazards, label=model)
 ax.set(
     title="Average $\lambda_2(t)$ by model",
     xlabel="time (days)",
     ylabel="$\lambda_2$",
-    ylim=hazards_ylim,
 )
 plt.legend();
 
@@ -294,34 +299,27 @@ plt.legend();
 
 # ## Fatigue failure $e_3$
 #
-# Lastly, usage failure start to increase from some $t > t_{fatigue}$, and then plateau at a high probability regime, in a logistic way.
-#
-# Here, $\lambda_3 \propto (1-\mathrm{materials}) \times \mathrm{usage\; rate}$
-
-def logistic(t, w, offset):
-    return 1 / (1 + np.exp((-t + offset) * w))
-
-
-baseline = logistic(t, w=2, offset=8) / 200
-plt.plot(t, baseline);
-plt.title("$\lambda_3$ failure baseline")
-plt.xlabel("times (years)");
+# We now model fatigue related features with Weibull hazards with k > 1.
 
 # +
-hazards_3 = np.vstack([
-    weibull_hazard(t, k=7 * material, s=15.) * rate
-    for material, rate in zip(df["materials"], df["usage_rate"])
-])
+def fatigue_hazards(df, t):
+    return np.vstack([
+        weibull_hazard(t, k=7 * material_quality, s=15.) * usage_rate
+        for material_quality, usage_rate in zip(df["material_quality"], df["usage_rate"])
+    ])
+
+
+hazards_3 = fatigue_hazards(df, t)
+# -
 
 fig, ax = plt.subplots()
 for h_3_ in hazards_3[:5]:
     ax.plot(t, h_3_)
 ax.set(title="$\lambda_3$ hazard", xlabel="time (years)");
-# -
 
 fig, ax = plt.subplots()
 for model in models:
-    mask_model = df["model_id"] == model
+    mask_model = df["truck_model"] == model
     hazards_mean = hazards_3[mask_model].mean(axis=0)
     ax.plot(t, hazards_mean, label=model)
 ax.set(
@@ -358,8 +356,8 @@ plt.legend();
 # +
 from scipy.stats import bernoulli
 
-def get_event_duration(event_matrix):
-    trials = bernoulli.rvs(event_matrix, random_state=rng)
+def get_event_duration(event_matrix, random_state=None):
+    trials = bernoulli.rvs(event_matrix, random_state=random_state)
     event = np.any(trials, axis=1)
     duration = np.full(event.shape[0], fill_value=total_days)
     rows, cols = np.where(trials == 1)
@@ -373,28 +371,14 @@ def get_event_duration(event_matrix):
 
 # -
 
-event_1, duration_1 = get_event_duration(hazards_1)
+event_1, duration_1 = get_event_duration(hazards_1, random_state=0)
 print(f"total events: {event_1.sum()}, mean duration: {duration_1[event_1].mean():.2f} days")
 
-event_2, duration_2 = get_event_duration(hazards_2)
+event_2, duration_2 = get_event_duration(hazards_2, random_state=0)
 print(f"total events: {event_2.sum()}, mean duration: {duration_2[event_2].mean():.2f} days")
 
-event_3, duration_3 = get_event_duration(hazards_3)
+event_3, duration_3 = get_event_duration(hazards_3, random_state=0)
 print(f"total events: {event_3.sum()}, mean duration: {duration_3[event_3].mean():.2f} days")
-
-fig, ax = plt.subplots()
-hists = [
-    duration_1[event_1],
-    duration_2[event_2],
-    duration_3[event_3],
-]
-labels = [f"$e_{idx}$" for idx in range(1, 4)]
-ax.hist(hists, bins=50, stacked=True, label=labels)
-ax.set(
-    title="Stacked marginal duration distributions",
-    xlabel="time (days)",
-)
-plt.legend();
 
 # We can now build our any event target, which is an `OR` operation on all events.
 
@@ -434,9 +418,9 @@ def get_first_event_duration(any_event, stacked_durations):
 df["event"], df["duration"] = get_first_event_duration(any_event, stacked_durations)
 
 observed_variables_and_target = [
-    "driver_skills",
+    "driver_skill",
     "brand",
-    "model_id",
+    "truck_model",
     "usage_rate",
     "duration",
     "event",
@@ -454,8 +438,6 @@ fig, ax = plt.subplots()
 ax.hist(hists, bins=50, stacked=True, label=labels);
 ax.set(title="Stacked combined duration distributions")
 plt.legend();
-
-3500 / 365
 
 (
     df[observed_variables_and_target]
