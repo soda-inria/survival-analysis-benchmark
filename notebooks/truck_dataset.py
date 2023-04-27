@@ -15,7 +15,7 @@
 
 # # The Truck Dataset
 
-# The purpose of this notebook is to generate a synthetic dataset of failure times with and without uncensoring to study survival analysis and competing risk analysis methods with access to the ground truth (e.g. uncensored failure times and true hazard functions).
+# The purpose of this notebook is to generate a synthetic dataset of failure times with and without uncensoring to study survival analysis and competing risk analysis methods with access to the ground truth (e.g. uncensored failure times and true hazard functions, conditioned on some observable features).
 #
 # We chose to simulate a predictive maintenance problem, namely the failures during the operation of a fleet of trucks.
 
@@ -47,7 +47,7 @@
 # |failure id |failure name |associated features         |
 # |-----------|-------------|----------------------------|
 # |$e_1$      |assembly     |assembly quality, usage rate|
-# |$e_2$      |operation    |UX, operator training, usage rate|
+# |$e_2$      |operation    |UX, operator training, driver skill, usage rate|
 # |$e_3$      |fatigue      |material quality, usage rate|
 
 # ## Drivers and truck properties
@@ -78,17 +78,9 @@ total_days = total_years * 365
 from scipy.stats import norm
 
 def sample_usage_weights(n_datapoints, rng):
-    u_mu_1, u_sigma_1 = .5, .08
-    u_mu_2, u_sigma_2 = .8, .05
-
-    rates_1 = norm.rvs(
-        u_mu_1, u_sigma_1, size=n_datapoints, random_state=rng
-    )
-    rates_2 = norm.rvs(
-        u_mu_2, u_sigma_2, size=n_datapoints, random_state=rng
-    )
+    rates_1 = norm.rvs(.5, .08, size=n_datapoints, random_state=rng)
+    rates_2 = norm.rvs(.8, .05, size=n_datapoints, random_state=rng)
     usage_mixture_idxs = rng.choice(2, size=n_datapoints, p=[1/3, 2/3])    
-    
     return np.where(usage_mixture_idxs, rates_1, rates_2).clip(0, 1)
 
 
@@ -106,14 +98,15 @@ def sample_driver_truck_pairs(n_datapoints, random_seed=None):
     )
     return df
 
-sample_driver_truck_pairs(n_datapoints, random_seed=0)
+
 # -
 
 fig, axes = plt.subplots(ncols=3, figsize=(12, 3))
 df = sample_driver_truck_pairs(n_datapoints, random_seed=0)
 df["usage_rate"].plot.hist(bins=30, xlabel="usage_rate", ax=axes[0])
 df["driver_skill"].plot.hist(bins=30, xlabel="driver_skill", ax=axes[1])
-df["truck_model"].value_counts().plot.bar(ax=axes[2]);
+df["truck_model"].value_counts().plot.bar(ax=axes[2])
+df
 
 # ### Truck models, Brands, UX, Material and Assembly quality
 #
@@ -348,7 +341,9 @@ ax.set(
     title="$\lambda_{\mathrm{total}}$ hazard",
     xlabel="time (years)",
     ylabel="$\lambda(t)$",
-    ylim=[None, 0.02],
+    
+    xlim=[None, 2000],
+    ylim=[-0.00001, 0.005],
 )
 plt.legend();
 
@@ -545,14 +540,87 @@ plot_stacked_occurrences(truck_data)
 
 truck_data
 
-df.to_parquet("data_truck.parquet", index=False)
+# Let's check that the Kaplan-Meier estimator can estimate the mean "any event" survival function. We compare this estimate to the theoretical mean survival function computed from the conditional hazard functions from which the event data has been sampled:
+
+# +
+from sksurv.nonparametric import kaplan_meier_estimator
+from scipy.interpolate import interp1d
+
+
+def plot_survival_function(event_frame, all_hazards):
+    assert all_hazards.shape[0] == event_frame.query("event != 0")["event"].nunique()
+    assert all_hazards.shape[1] == event_frame.shape[0]  # observations
+    assert all_hazards.shape[2] >= event_frame["duration"].max()  # days
+
+    any_event = event_frame["event"] > 0
+    km_times, km_surv_probs = kaplan_meier_estimator(any_event, event_frame["duration"])
+
+    # Make it possible to evaluate the survival probabilities at any time step with
+    # with constant extrapolation if necessary.
+    times = np.arange(total_days)
+    surv_func = interp1d(
+        km_times,
+        km_surv_probs,
+        kind="previous",
+        bounds_error=False,
+        fill_value="extrapolate"
+    )
+    surv_probs = surv_func(times)
+
+    any_event_hazards = all_hazards.sum(axis=0)
+    true_surv = np.exp(-any_event_hazards.cumsum(axis=-1))
+
+    plt.step(times, surv_probs, label="KM estimator $\hat{S}(t)$")
+    plt.step(times, true_surv.mean(axis=0), label="True $S(t)$")
+    plt.legend()
+    plt.title("$\hat{S}(t)$ for fixed condition")
+    
+    
+plot_survival_function(truck_data, all_hazards)
+# -
+
+# The Aalan-Johansen estimator allows us to compute the cumulative incidence function $P(T < t)$ for competitive events.
+# We compare its estimation to the ground truth by converting our fixed hazards to CIF.
+
+# $$CIF_k(t) = \int^t_0 f(u) du = \int^t_0 \lambda_k(u).S(u) du $$
+#
+# Where $f(t)$ is the probability density, $CIF_k(t)$ is the cumulative incidence function, $\lambda_k(t)$ is the hazard rate of event $k$ and $S(t)$ is the survival probability.
+
+# +
+from scipy.interpolate import interp1d
+from lifelines import AalenJohansenFitter
+
+
+def plot_cumulative_incidence_functions(event_frame, all_hazards):
+    fig, axes = plt.subplots(figsize=(6, 9), nrows=3, ncols=1)
+
+    any_event_hazards = all_hazards.sum(axis=0)
+    true_surv = np.exp(-any_event_hazards.cumsum(axis=-1))
+
+    for event_id, (ax, hazards_i) in enumerate(zip(axes, all_hazards), 1):
+        ajf = AalenJohansenFitter(calculate_variance=True)
+        ajf.fit(event_frame["duration"], event_frame["event"], event_of_interest=event_id)
+        ajf.plot(label=f"Predicted $CIF_{event_id}$", ax=ax)
+
+        cif = (hazards_i * true_surv).cumsum(axis=-1).mean(axis=0)
+        ax.plot(cif, label=f"True $CIF_{event_id}$"),
+        ax.set(ylim=[-.01, 1.01]),
+        ax.legend()
+        
+
+plot_cumulative_incidence_functions(truck_data, all_hazards)
+# -
+
+# If all is well, let's save this dataset to disk:
+
+truck_data.to_parquet("data_truck.parquet", index=False)
+
+# Let's also save the underlying hazard functions used to sample each event of the dataset.
 
 np.savez_compressed(
     "data_truck_hazards.npz",
     all_hazards=all_hazards,
 )
-
-# ls -lh data*
 
 # +
 with np.load("data_truck_hazards.npz") as hazards_file:
@@ -563,70 +631,17 @@ array_names
 
 # ## Sampling targets at fixed conditional X
 #
-# We now fix our covariates X to the first truck-driver couple, and create a fixed dataset by sampling $N$ times our first user multi-event hazards. The goal is to check that an unconditional estimator designed for competing events, called Aalen-Johanson, gives hazards estimations close to the ground truth.
+# We now fix our covariates X to the first truck-driver pair, and create a fixed dataset by sampling $N$ times our first user multi-event hazards. The goal is to check that an unconditional estimator designed for competing events, called Aalen-Johanson, gives hazards estimations close to the ground truth.
 
 df_fixed_condition, hazards_fixed_condition = generate_competing_risk_truck_data(
-    1000, fixed_condition=True, uniform_censoring_weight=1.0, random_seed=0
+    300, fixed_condition=True, uniform_censoring_weight=1.0, random_seed=3
 )
 df_fixed_condition["event"].value_counts().sort_index().plot.bar(rot=0)
 plot_stacked_occurrences(df_fixed_condition)
 
+plot_survival_function(df_fixed_condition, hazards_fixed_condition)
+plot_cumulative_incidence_functions(df_fixed_condition, hazards_fixed_condition)
+
 df_fixed_condition
 
-# Let's check that the hazards arrays are constant:
-
-hazards_fixed_condition.shape
-
-# We begin by estimating the survival probability $\hat{S}(t)=P(t<T)$ of any event of this fixed condition dataset, using the Kaplan Meier estimator.
-
-# +
-from sksurv.nonparametric import kaplan_meier_estimator
-from scipy.interpolate import interp1d
-
-any_failure = df_fixed_condition["event"] > 0
-km_times, km_surv_probs = kaplan_meier_estimator(any_failure, df_fixed_condition["duration"])
-
-# Make it possible to evaluate the survival probabilities at any time step with
-# with constant extrapolation if necessary.
-times = np.arange(total_days)
-surv_func = interp1d(
-    km_times, km_surv_probs, kind="previous", bounds_error=False, fill_value="extrapolate"
-)
-surv_probs = surv_func(times)
-
-total_hazards = hazards_fixed_condition.sum(axis=0)
-true_surv = np.exp(-total_hazards.cumsum(axis=-1))
-
-plt.step(times, surv_probs, label="KM estimator $\hat{S}(t)$")
-plt.step(times, true_surv.mean(axis=0), label="True $S(t)$")
-plt.legend()
-plt.title("$\hat{S}(t)$ for fixed condition");
-# -
-
-# $$CIF_k(t) = \int^t_0 f(u) du = \int^t_0 \lambda_k(u).S(u) du $$
-#
-# Where $f(t)$ is the probability density, $CIF_k(t)$ is the cumulative incidence function, $\lambda_k(t)$ is the hazard rate of event $k$ and $S(t)$ is the survival probability.
-
-# The Aalan-Johansen estimator allows us to compute the cumulative incidence function $P(T < t)$ for competitive events.
-# We compare its estimation to the ground truth by converting our fixed hazards to CIF.
-
-# +
-from scipy.interpolate import interp1d
-from lifelines import AalenJohansenFitter
-
-fig, axes = plt.subplots(figsize=(6, 9), nrows=3, ncols=1)
-
-for event_id, (ax, hazards_i) in enumerate(zip(axes, hazards_fixed_condition), 1):
-    ajf = AalenJohansenFitter(calculate_variance=True)
-    ajf.fit(df_fixed_condition["duration"], df_fixed_condition["event"], event_of_interest=event_id)
-    ajf.plot(label=f"Predicted $CIF_{event_id}$", ax=ax)
-    
-    cif = (hazards_i * true_surv).cumsum(axis=-1).mean(axis=0)
-    ax.plot(cif, label=f"True $CIF_{event_id}$"),
-    ax.set(ylim=[-.01, 1.01]),
-    ax.legend()
-# -
-
-# We should see that the Aalan-Johansen method provides an accurate estimators for the unconditional competing hazards!
-
-
+# We should see that the Aalen-Johansen method provides an accurate estimators for the unconditional competing hazards!
