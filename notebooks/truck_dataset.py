@@ -54,6 +54,7 @@
 
 import pandas as pd
 import numpy as np
+from sklearn.utils import check_random_state
 from matplotlib import pyplot as plt
 import seaborn as sns
 sns.set_style("darkgrid")
@@ -155,7 +156,12 @@ def sample_driver_truck_pairs_with_metadata(n_datapoints, random_seed):
         sample_driver_truck_pairs(
             n_datapoints, random_seed=random_seed
         )
+        .reset_index()
         .merge(trucks, on="truck_model")
+        # Sort by original index to avoid introducing an ordering
+        # of the dataset based on the truck_model column.
+        .sort_values("index")
+        .drop("index", axis="columns")
     )
 
 sample_driver_truck_pairs_with_metadata(10, random_seed=0)
@@ -187,26 +193,24 @@ df.head()
 #
 # The hazard function can be implemented as:
 
-def weibull_hazard(t, k=1., s=1., t_shift=0.1):
+def weibull_hazard(t, k=1., s=1., t_shift=100, base_rate=1e2):
     # See: https://en.wikipedia.org/wiki/Weibull_distribution
     # t_shift is a trick to avoid avoid negative powers at t=0 when k < 1.
     # t_shift could be interpreted at the operation time at the factory for
     # quality assurance checks for instance.
     t = t + t_shift
-    return (k / s) * (t / s) ** (k - 1.)
+    return base_rate * (k / s) * (t / s) ** (k - 1.)
 
 
 # +
 fig, ax = plt.subplots()
-hazards_ylim = [-0.001, .02]
 
-t = np.linspace(0, 10., 1000)
-for k, s in [(0.003, 1.), (1, 1e2), (7., 15.)]:
-    y = weibull_hazard(t, k=k, s=s)
+t = np.linspace(0, total_days, total_days)  # in days
+for k, s in [(0.003, 1.0), (1, 1e5), (7., 5e3)]:
+    y = weibull_hazard(t, k=k, s=s)  # rate of failures / day
     ax.plot(t, y, alpha=0.6, label=f"$k={k}, s={s}$");
 ax.set(
     title="Weibull Hazard (failure rates)",
-    ylim=hazards_ylim,
 );
 plt.legend();
 # -
@@ -221,25 +225,25 @@ plt.legend();
 #
 
 # +
-t = np.linspace(0, total_years, total_days)
+t = np.linspace(0, total_days, total_days)
 
 def assembly_hazards(df, t):
-    baseline = weibull_hazard(t, k=0.0003)
+    baseline = weibull_hazard(t, k=0.003)
     s = (df["usage_rate"] * (1 - df["assembly_quality"])).to_numpy()
     return s.reshape(-1, 1) * baseline.reshape(1, -1)
 
 fig, ax = plt.subplots()
-df = sample_driver_truck_pairs_with_metadata(5, random_seed=0)
-hazards_1 = assembly_hazards(df, t)
+subsampled_df = sample_driver_truck_pairs_with_metadata(5, random_seed=0)
+hazards_1 = assembly_hazards(subsampled_df, t)
 for idx, h1 in enumerate(hazards_1):
     ax.plot(t, h1, label=f"Pair #{idx}")
 ax.set(
     title="$\lambda_1$ hazard for some (driver, truck) pairs",
-    xlabel="time (years)",
+    xlabel="time (days)",
     ylabel="$\lambda_1$",
 )
 plt.legend()
-df
+subsampled_df
 # -
 
 # This seems to indicate that drivers of Cheapz trucks have a significantly larger risk to run into a manufacturing defect during the first 2 years. Let's confirm this by computing the mean hazards per brands on a a much larger sample:
@@ -255,7 +259,7 @@ for brand in df["brand"].unique():
     ax.plot(t, mean_hazards, label=brand)
 ax.set(
     title="Average $\lambda_1(t)$ hazard by brand",
-    xlabel="time (years)",
+    xlabel="time (days)",
     ylabel="$\lambda_1$",
 )
 plt.legend();
@@ -270,7 +274,7 @@ plt.legend();
 # +
 def operational_hazards(df, t):
     # Weibull hazards with k = 1 is just a constant over time:
-    baseline = np.full(shape=t.shape[0], fill_value=0.005)
+    baseline = weibull_hazard(t, k=1, s=1.5e4)
     s = (
         ((1 - df["driver_skill"]) * (1 - df["ux"]) + .001) * df["usage_rate"]
     ).to_numpy()
@@ -304,7 +308,7 @@ plt.legend();
 # +
 def fatigue_hazards(df, t):
     return np.vstack([
-        weibull_hazard(t, k=7 * material_quality, s=15.) * usage_rate
+        weibull_hazard(t, k=6 * material_quality, s=4e3) * usage_rate
         for material_quality, usage_rate in zip(df["material_quality"], df["usage_rate"])
     ])
 
@@ -315,7 +319,7 @@ hazards_3 = fatigue_hazards(df, t)
 fig, ax = plt.subplots()
 for h_3_ in hazards_3[:5]:
     ax.plot(t, h_3_)
-ax.set(title="$\lambda_3$ hazard", xlabel="time (years)");
+ax.set(title="$\lambda_3$ hazard", xlabel="time (days)");
 
 fig, ax = plt.subplots()
 for model in models:
@@ -324,7 +328,7 @@ for model in models:
     ax.plot(t, hazards_mean, label=model)
 ax.set(
     title="Average $\lambda_3(t)$",
-    xlabel="time (years)",
+    xlabel="time (days)",
 )
 plt.legend();
 
@@ -334,6 +338,8 @@ plt.legend();
 
 hazards_1.shape, hazards_2.shape, hazards_3.shape
 
+hazards_1.nbytes / 1e6
+
 total_hazards = (hazards_1[:5] + hazards_2[:5] + hazards_3[:5])
 fig, ax = plt.subplots()
 for idx, total_hazards_ in enumerate(total_hazards):
@@ -341,13 +347,14 @@ for idx, total_hazards_ in enumerate(total_hazards):
 ax.set(
     title="$\lambda_{\mathrm{total}}$ hazard",
     xlabel="time (years)",
-    ylabel="$\lambda(t)$"
+    ylabel="$\lambda(t)$",
+    ylim=[None, 0.02],
 )
 plt.legend();
 
 # ## Sampling from all hazards
 #
-# Now that we have the event probability density for the entire period of observation, we can sample the failure for all (operator, machine) couples and define our target.
+# Now that we have the event hazards for the entire period of observation, we can sample the failure for all (driver, truck) pairs and define our target.
 #
 # Our target `y` is comprised of two columns:
 # - `event`: 1, 2, 3 or 0 if no event occured during the period or if the observation was censored
@@ -356,236 +363,270 @@ plt.legend();
 # +
 from scipy.stats import bernoulli
 
-def get_event_duration(event_matrix, random_state=None):
-    trials = bernoulli.rvs(event_matrix, random_state=random_state)
-    event = np.any(trials, axis=1)
-    duration = np.full(event.shape[0], fill_value=total_days)
-    rows, cols = np.where(trials == 1)
-    # Some trials might have more than one event,
+
+def sample_events_by_type(hazards, random_state=None):
+    rng = check_random_state(random_state)
+    outcomes = bernoulli.rvs(hazards, random_state=rng)
+    any_event_mask = np.any(outcomes, axis=1)
+    duration = np.full(outcomes.shape[0], fill_value=total_days)
+    occurrence_rows, occurrence_cols = np.where(outcomes)
+    # Some individuals might have more than one event occurrence,
     # we only keep the first one.
     # ex: trials = [[0, 0, 1, 0, 1]] -> duration = 2
-    _, idxs = np.unique(rows, return_index=True)
-    duration[event] = cols[idxs]
-    return event, duration
+    _, first_occurrence_idxs = np.unique(occurrence_rows, return_index=True)
+    duration[any_event_mask] = occurrence_cols[first_occurrence_idxs]
+    jitter = rng.rand(duration.shape[0]) - 0.5
+    return pd.DataFrame(dict(event=any_event_mask, duration=duration + jitter))
 
 
 # -
 
-event_1, duration_1 = get_event_duration(hazards_1, random_state=0)
-print(f"total events: {event_1.sum()}, mean duration: {duration_1[event_1].mean():.2f} days")
+# Let's count the number of events of each type that would occur if event types were non-competing:
 
-event_2, duration_2 = get_event_duration(hazards_2, random_state=0)
-print(f"total events: {event_2.sum()}, mean duration: {duration_2[event_2].mean():.2f} days")
-
-event_3, duration_3 = get_event_duration(hazards_3, random_state=0)
-print(f"total events: {event_3.sum()}, mean duration: {duration_3[event_3].mean():.2f} days")
-
-# We can now build our any event target, which is an `OR` operation on all events.
-
-any_event = np.logical_or(
-    np.logical_or(
-        event_1,
-        event_2,
-    ),
-    event_3,
+rng = check_random_state(0)
+occurrences_1 = sample_events_by_type(hazards_1, random_state=rng)
+print(
+    f"total events: {occurrences_1['event'].sum()}, "
+    f"mean duration: {occurrences_1.query('event')['duration'].mean():.2f} days"
 )
-np.unique(any_event, return_counts=True)
 
-# For each couple (operator, machine), we only consider the first event that happened, if any. Indeed, if a machine failed from $e_2$, it won't fail for $e_3$.
+occurrences_2 = sample_events_by_type(hazards_2, random_state=rng)
+print(
+    f"total events: {occurrences_2['event'].sum()}, "
+    f"mean duration: {occurrences_2.query('event')['duration'].mean():.2f} days"
+)
 
-stacked_durations = np.vstack([duration_1, duration_2, duration_3])
-stacked_durations
+occurrences_3 = sample_events_by_type(hazards_3, random_state=rng)
+print(
+    f"total events: {occurrences_3['event'].sum()}, "
+    f"mean duration: {occurrences_3.query('event')['duration'].mean():.2f} days"
+)
 
 
-def get_first_event_duration(any_event, stacked_durations):
-    duration_event = stacked_durations[:, any_event]
-    first_hit = np.nanargmin(duration_event, axis=0)
+# Let's compute the result of the competing events buy only considering the first event for each driver / truck pair.
+
+# +
+def first_event(event_frames, event_ids, random_seed=None):
+    rng = check_random_state(random_seed)
+    event = np.zeros(event_frames[0].shape[0], dtype=np.int32)
+    max_duration = np.max([ef["duration"].max() for ef in event_frames])
+    duration = np.full_like(event_frames[0]["duration"], fill_value=max_duration)
     
-    n_total = any_event.shape[0]
-    n_events = duration_event.shape[1]
+    out = pd.DataFrame(
+        {
+            "event": event,
+            "duration": duration,
+        }
+    )
+    for event_id, ef in zip(event_ids, event_frames):
+        mask = ef["event"] & (ef["duration"] < out["duration"])
+        out.loc[mask, "event"] = event_id
+        out.loc[mask, "duration"] = ef.loc[mask, "duration"]
+    return out
 
-    duration = np.full(n_total, fill_value=total_days)
-    jdxs = np.arange(n_events)
-
-    duration[any_event] = duration_event[first_hit, jdxs]
     
-    event = any_event.astype(int)
-    event[np.where(event)] = first_hit + 1
+competing_events = first_event(
+    [occurrences_1, occurrences_2, occurrences_3], event_ids=[1, 2, 3]
+)
+competing_events["event"].value_counts().sort_index().plot.bar(rot=0);
 
-    return event, duration
+
+# +
+def plot_stacked_occurrences(occurrences):
+    hists = [
+        occurrences.query("event == @idx")["duration"]
+        for idx in range(4)
+    ]
+    labels = [f"$e_{idx}$" for idx in range(4)]
+    fig, ax = plt.subplots()
+    ax.hist(hists, bins=50, stacked=True, label=labels);
+    ax.set(
+        xlabel="duration (days)",
+        ylabel="occurrence count",
+        title="Stacked combined duration distributions",
+    )
+    plt.legend();
 
 
-df["event"], df["duration"] = get_first_event_duration(any_event, stacked_durations)
+plot_stacked_occurrences(competing_events)
 
-observed_variables_and_target = [
+
+# -
+
+# Let's now write a function to add non-informative (independent uniform censoring):
+
+# +
+def uniform_censoring(occurrences, censoring_weight=0.5, offset=0, random_state=None):
+    n_datapoints = occurrences.shape[0]
+    rng = check_random_state(random_state)
+    max_duration = occurrences["duration"].max()
+    censoring_durations = rng.randint(
+        low=offset, high=max_duration, size=n_datapoints
+    )
+    # reduce censoring randomly by setting durations back to the max,
+    # effectively ensuring that a fraction of the datapoints will not
+    # be censured.
+    disabled_censoring_mask = rng.rand(n_datapoints) > censoring_weight
+    censoring_durations[disabled_censoring_mask] = max_duration
+    out = occurrences.copy()
+    censor_mask = occurrences["duration"] > censoring_durations
+    out.loc[censor_mask, "event"] = 0
+    out.loc[censor_mask, "duration"] = censoring_durations[censor_mask]
+    return out
+
+
+censored_events = uniform_censoring(competing_events, random_state=0)
+censored_events["event"].value_counts().sort_index().plot.bar(rot=0);
+# -
+
+plot_stacked_occurrences(censored_events)
+
+# Let's put it all data generation steps together.
+
+# +
+observed_variables = [
     "driver_skill",
     "brand",
     "truck_model",
     "usage_rate",
-    "duration",
-    "event",
 ]
-df[observed_variables_and_target]
 
-df["event"].value_counts().sort_index().plot.bar(rot=0);
 
-hists = [
-    df.loc[df["event"] == idx]["duration"]
-    for idx in range(4)
-]
-labels = [f"$e_{idx}$" for idx in range(4)]
-fig, ax = plt.subplots()
-ax.hist(hists, bins=50, stacked=True, label=labels);
-ax.set(title="Stacked combined duration distributions")
-plt.legend();
+def generate_competing_risk_truck_data(
+    n_observations,
+    fixed_condition=False,
+    uniform_censoring_weight=0.5,
+    random_seed=0
+):
+    rng = check_random_state(random_seed)
+    t = np.linspace(0, total_days, total_days)
+    if fixed_condition:
+        df = sample_driver_truck_pairs_with_metadata(
+            1, random_seed=random_seed
+        )
+        df = pd.concat([df] * n_observations, axis="rows").reset_index(drop=True)
+    else:
+        df = sample_driver_truck_pairs_with_metadata(
+            n_datapoints, random_seed=random_seed
+        )
+    hazard_funcs = [
+        assembly_hazards,
+        operational_hazards,
+        fatigue_hazards,
+    ]
+    event_ids = np.arange(len(hazard_funcs)) + 1
+    all_hazards = np.asarray([
+        hazard_func(df, t) for hazard_func in hazard_funcs
+    ])
+    occurrences_by_type = [
+        sample_events_by_type(all_hazards[i], random_state=rng)
+        for i in range(all_hazards.shape[0])
+    ]
+    occurrences = first_event(occurrences_by_type, event_ids)
+    censored_occurrences = uniform_censoring(
+        occurrences, censoring_weight=uniform_censoring_weight, random_state=rng
+    )
+    return (
+        pd.concat(
+            [
+                df[observed_variables],
+                censored_occurrences,
+                occurrences.add_suffix("_uncensored"),
+            ],
+            axis="columns",
+        ),
+        all_hazards  # shape = (n_event_types, n_observations, n_timesteps)
+    )
 
-(
-    df[observed_variables_and_target]
-    .sample(frac=1)
-    .to_parquet("data_truck.parquet", index=False)
+truck_data, all_hazards = generate_competing_risk_truck_data(10_000, random_seed=0)
+truck_data["event"].value_counts().sort_index().plot.bar(rot=0);
+plot_stacked_occurrences(truck_data)
+# -
+
+truck_data
+
+df.to_parquet("data_truck.parquet", index=False)
+
+np.savez_compressed(
+    "data_truck_hazards.npz",
+    all_hazards=all_hazards,
 )
+
+# ls -lh data*
+
+# +
+with np.load("data_truck_hazards.npz") as hazards_file:
+    array_names = list(hazards_file.keys())
+
+array_names
+# -
 
 # ## Sampling targets at fixed conditional X
 #
-# We now fix our covariates X to the first truck-driver couple, and create a fixed dataset by sampling $N$ times our first user multi-event hazards. The goal is to check that a non-informative estimator designed for competing events, called Aalen-Johanson, gives hazards estimations close to the ground truth.
+# We now fix our covariates X to the first truck-driver couple, and create a fixed dataset by sampling $N$ times our first user multi-event hazards. The goal is to check that an unconditional estimator designed for competing events, called Aalen-Johanson, gives hazards estimations close to the ground truth.
 
-df.head(1)
+df_fixed_condition, hazards_fixed_condition = generate_competing_risk_truck_data(
+    1000, fixed_condition=True, uniform_censoring_weight=1.0, random_seed=0
+)
+df_fixed_condition["event"].value_counts().sort_index().plot.bar(rot=0)
+plot_stacked_occurrences(df_fixed_condition)
 
-h_1, h_2, h_3 = hazards_1[0], hazards_2[0], hazards_3[0]
-total_h = h_1 + h_2 + h_3
-h_1.shape, h_2.shape, h_3.shape
+df_fixed_condition
 
-fig, ax = plt.subplots()
-ax.plot(total_h, label="$\lambda_{\mathrm{total}}$", linestyle="--")
-ax.plot(h_1, label="$\lambda_1$")
-ax.plot(h_2, label="$\lambda_2$")
-ax.plot(h_3, label="$\lambda_3$")
-ax.set(
-    title="$\lambda_{\{1,2,3\}}(t)$ for individual 1",
-    xlabel="time (days)",
-    ylabel="$\lambda(t)$",
-    ylim=[-1e-3, 1e-2],
-);
-plt.legend();
+# Let's check that the hazards arrays are constant:
 
+hazards_fixed_condition.shape
 
-# We generate $N$ labels by sampling from the hazards of our first truck-driver couple.
-
-def get_labels(hazards):
-    """Generate competitive events and durations.
-    
-    Steps:
-    1. Separately sample events and their associated durations
-       from the hazards using Bernoulli trials.
-    2. Stack durations and compute the binary "any" event.
-    3. Fetch the first events based on their durations.
-    """
-    
-    events, durations = [], []
-    for hazard_ in hazards:
-        hazard_duplicated = np.vstack([hazard_] * N)
-        event_, duration_ = get_event_duration(hazard_duplicated)
-        events.append(event_)
-        durations.append(duration_)
-    
-    stacked_durations = np.vstack(durations)
-    any_event = np.logical_or(
-        np.logical_or(
-            events[0],
-            events[1],
-        ),
-        events[2],
-    )
-    
-    event, duration = get_first_event_duration(any_event, stacked_durations)
-    
-    y = pd.DataFrame(
-        dict(
-            event=event,
-            duration=duration,
-        )
-    )
-    return y
-
-
-all_hazards = [h_1, h_2, h_3]
-y_fixed = get_labels(all_hazards)
-y_fixed
-
-y_fixed["event"].value_counts().sort_index()
-
-# We begin by estimating the survival probability $\hat{S}(t)=P(t<T)$ of any event of this fixed dataset, using the Kaplan Meier estimator.
+# We begin by estimating the survival probability $\hat{S}(t)=P(t<T)$ of any event of this fixed condition dataset, using the Kaplan Meier estimator.
 
 # +
 from sksurv.nonparametric import kaplan_meier_estimator
+from scipy.interpolate import interp1d
 
-any_event = y_fixed["event"] > 0
-km_x, km_y = kaplan_meier_estimator(any_event, y_fixed["duration"])
-plt.step(km_x, km_y)
-plt.title("$\hat{S}(t)$ for individual 1");
+any_failure = df_fixed_condition["event"] > 0
+km_times, km_surv_probs = kaplan_meier_estimator(any_failure, df_fixed_condition["duration"])
 
+# Make it possible to evaluate the survival probabilities at any time step with
+# with constant extrapolation if necessary.
+times = np.arange(total_days)
+surv_func = interp1d(
+    km_times, km_surv_probs, kind="previous", bounds_error=False, fill_value="extrapolate"
+)
+surv_probs = surv_func(times)
 
+total_hazards = hazards_fixed_condition.sum(axis=0)
+true_surv = np.exp(-total_hazards.cumsum(axis=-1))
+
+plt.step(times, surv_probs, label="KM estimator $\hat{S}(t)$")
+plt.step(times, true_surv.mean(axis=0), label="True $S(t)$")
+plt.legend()
+plt.title("$\hat{S}(t)$ for fixed condition");
 # -
 
-# $$CIF(t) = \int^t_0 f(u) du = \int^t_0 \lambda(u).S(u) du $$
+# $$CIF_k(t) = \int^t_0 f(u) du = \int^t_0 \lambda_k(u).S(u) du $$
 #
-# Where $f(t)$ is the probability density, $CIF(t)$ is the cumulative incidence function, $\lambda(t)$ is the hazard rate and $S(t)$ is the survival probability.
-
-def hazard_to_cif(hazards, surv_probs):
-    return (hazards * surv_probs).cumsum()
-
+# Where $f(t)$ is the probability density, $CIF_k(t)$ is the cumulative incidence function, $\lambda_k(t)$ is the hazard rate of event $k$ and $S(t)$ is the survival probability.
 
 # The Aalan-Johansen estimator allows us to compute the cumulative incidence function $P(T < t)$ for competitive events.
 # We compare its estimation to the ground truth by converting our fixed hazards to CIF.
 
 # +
-from sksurv.functions import StepFunction
+from scipy.interpolate import interp1d
 from lifelines import AalenJohansenFitter
 
 fig, axes = plt.subplots(figsize=(6, 9), nrows=3, ncols=1)
 
-# We need to compute the survival proba for any event to
-# convert the hazards to CIF.
-times = np.arange(total_days)
-surv_probs = StepFunction(km_x, km_y)(times)
-
-for event, (ax, hazards) in enumerate(zip(axes, all_hazards), 1):
+for event_id, (ax, hazards_i) in enumerate(zip(axes, hazards_fixed_condition), 1):
     ajf = AalenJohansenFitter(calculate_variance=True)
-    ajf.fit(y_fixed["duration"], y_fixed["event"], event_of_interest=event)
-    ajf.plot(label=f"Predicted $CIF_{event}$", ax=ax)
+    ajf.fit(df_fixed_condition["duration"], df_fixed_condition["event"], event_of_interest=event_id)
+    ajf.plot(label=f"Predicted $CIF_{event_id}$", ax=ax)
     
-    cif = hazard_to_cif(hazards, surv_probs)
-    ax.plot(cif, label=f"True $CIF_{event}$")
+    cif = (hazards_i * true_surv).cumsum(axis=-1).mean(axis=0)
+    ax.plot(cif, label=f"True $CIF_{event_id}$"),
+    ax.set(ylim=[-.01, 1.01]),
     ax.legend()
 # -
 
-# We see that the Aalan-Johansen estimator gives an accurate representation of the competitive hazards!
-#
-# Finally, let's save a dataset any event of this fixed covariate. We only keep only events that happened, so that we can add censoring to the dataset while knowing the underlying time-to-event distribution.
-
-df_single = pd.DataFrame(
-    dict(event=any_event, duration=y_fixed["duration"])
-)
-df_single = (
-    df_single.loc[df_single["event"]]
-    .reset_index(drop=True)
-)
-df_single.shape
-
-# +
-df_single["ground_truth_duration"] = df_single["duration"].copy()
-
-censored_duration = np.percentile(df_single["duration"], 70)
-mask_censoring = df_single["duration"] > censored_duration
-
-df_single.loc[mask_censoring, "event"] = False
-df_single.loc[mask_censoring, "duration"] = censored_duration
-
-df_single["event"].value_counts()
-# -
-
-df_single.to_parquet(
-    "data_truck_no_covariates.parquet", index=False,
-)
+# We should see that the Aalan-Johansen method provides an accurate estimators for the unconditional competing hazards!
 
 
