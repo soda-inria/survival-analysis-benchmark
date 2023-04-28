@@ -53,6 +53,7 @@
 
 # %%
 import pandas as pd
+import numpy as np
 
 df = pd.read_parquet("data_truck_no_covariates.parquet")
 df[["event", "duration"]].head()
@@ -84,8 +85,6 @@ print(
 )
 
 # %%
-import numpy as np
-
 max_duration = df["duration"].max()
 stats_2 = (
     pd.Series(
@@ -177,25 +176,21 @@ def get_median_survival_proba(times, survival_proba):
     return median_survival_proba_time
 
 
+# %% jupyter={"source_hidden": true}
+### Solution
+
+def get_median_survival_proba(times, survival_proba):
+    """Get the closest time to a survival proba of 50%.
+    """
+    # Search sorted needs an ascending ordered array.
+    sorted_survival_proba = survival_proba[::-1]
+    median_idx = np.searchsorted(sorted_survival_proba, 0.50)
+    median_survival_proba_time = times[-median_idx]
+    return median_survival_proba_time
+
+
 # %%
 get_median_survival_proba(times, survival_probas)
-
-# %% [markdown]
-# <details><summary><i><b>Solution</b></i></summary>
-# <br>
-#     
-# ```python
-# def get_median_survival_proba(times, survival_proba):
-#     """Get the closest time to a survival proba of 50%.
-#     """
-#     # Search sorted needs an ascending ordered array.
-#     sorted_survival_proba = survival_proba[::-1]
-#     median_idx = np.searchsorted(sorted_survival_proba, 0.50)
-#     median_survival_proba_time = times[-median_idx]
-#     return median_survival_proba_time
-# ```
-#     
-# </details>
 
 # %% [markdown]
 # We can enrich our analysis by introducing covariates, that are statistically associated to the events and durations.
@@ -219,39 +214,39 @@ df
 # %%
 import plotly.graph_objects as go
 
+def plot_brands_km(df):
+    brands = df["brand"].unique()
+    fig_data = []
+    for brand in brands:
+        ### Your code here
+        pass
+        ###
+    fig = go.Figure(fig_data)
+    fig.show()
 
-brands = df["brand"].unique()
-fig_data = []
-for brand in brands:
-    ### Your code here
-    pass
-    ###
-go.Figure(fig_data)
+
+# %% jupyter={"source_hidden": true}
+import plotly.graph_objects as go
+
+def plot_brands_km(df):
+    brands = df["brand"].unique()
+    fig_data = []
+    for brand in brands:
+        df_brand = df.loc[df["brand"] == brand]
+        times_, survival_probas_ = kaplan_meier_estimator(df_brand["event"], df_brand["duration"])
+        fig_data.append(
+            go.Scatter(x=times_, y=survival_probas_, name=brand)
+        )
+    fig = go.Figure(fig_data)
+    fig.show()
+
+
+# %%
+plot_brands_km(df)
 
 # %% [markdown]
-# <details><summary><i><b>Solution</b></i></summary>
-# <br>
-#     
-# ```python
-# import plotly.graph_objects as go
-#
-# brands = df["brand"].unique()
-# fig_data = []
-# for brand in brands:
-#     df_brand = df.loc[df["brand"] == brand]
-#     times_, survival_probas_ = kaplan_meier_estimator(df_brand["event"], df_brand["duration"])
-#     fig_data.append(
-#         go.Scatter(x=times_, y=survival_probas_, name=brand)
-#     )
-# go.Figure(fig_data)
-# ```
-#
-# <br>
 # The stratified method quickly become impracticable as the covariate groups grow. We need estimator that can handle covariates.
-#     
-# </details>
-
-# %% [markdown]
+#
 # Next, we'll study how to add covariates $X$ to our analysis.
 
 # %% [markdown]
@@ -296,6 +291,16 @@ def make_target(event, duration):
     return y
 
 
+def make_test_times(duration):
+    """Bound times to the range of duration.
+    """
+    return np.linspace(
+        duration.min(),
+        duration.max() - 1,
+        num=100,
+    )
+
+
 # %%
 from sksurv.metrics import brier_score
 from sksurv.functions import StepFunction
@@ -305,11 +310,7 @@ survival_func = StepFunction(times, survival_proba)
 
 # Bound `times` to the range of `duration`.
 # This is needed to compute the brier score.
-times = np.linspace(
-    df["duration"].min(),
-    df["duration"].max() - 1,
-    num=100,
-)
+times = make_test_times(df["duration"])
 
 # Call the function with the new `times` variable and
 # get the matching survival proba.
@@ -453,7 +454,19 @@ X = df
 # %%
 from sklearn.model_selection import train_test_split
 
-X_train, X_test, y_train, y_test = train_test_split(X, y)
+def train_test_split_within(X, y, **kwargs):
+    """Ensure that all our test data durations are within 
+    our observation train data durations.
+    """
+    X_train, X_test, y_train, y_test = train_test_split(X, y, **kwargs)
+    mask_duration_inliers = y_test["duration"] < y_train["duration"].max()
+    y_test = y_test[mask_duration_inliers]
+    X_test = X_test[mask_duration_inliers]
+    return X_train, X_test, y_train, y_test
+
+
+# %%
+X_train, X_test, y_train, y_test = train_test_split_within(X, y)
 X_train.shape, X_test.shape
 
 # %% [markdown]
@@ -464,24 +477,21 @@ X_train.shape, X_test.shape
 # *Hint*: Use `sklearn.preprocessing.OneHotEncoder` and `sklearn.compose.make_column_transformer`.
 
 # %%
+from sklearn.compose import make_column_transformer
+from sklearn.preprocessing import OneHotEncoder
+
 ### Your code here
 transformer = None
 ###
 
-# %% [markdown]
-# <details><summary><b><i>Solution</i></b></summary>
-# <br>
-#
-# ```python
-# from sklearn.compose import make_column_transformer
-# from sklearn.preprocessing import OneHotEncoder
-#
-# transformer = make_column_transformer(
-#     (OneHotEncoder(), ["brand", "model_id"]),
-#     remainder="passthrough",
-# )
-# ```
-# </details>
+# %% jupyter={"source_hidden": true}
+from sklearn.compose import make_column_transformer
+from sklearn.preprocessing import OneHotEncoder
+
+transformer = make_column_transformer(
+    (OneHotEncoder(), ["brand", "model_id"]),
+    remainder="passthrough",
+)
 
 # %%
 from sklearn.pipeline import make_pipeline
@@ -495,10 +505,11 @@ cox_ph.fit(X_train, y_train)
 
 # %%
 step_funcs = cox_ph.predict_survival_function(X_test)
+test_times = make_test_times(y_test["duration"])
 
 fig, ax = plt.subplots()
 for idx, step_func in enumerate(step_funcs[:5]):
-    survival_proba = step_func(times)
+    survival_proba = step_func(test_times)
     ax.plot(times, survival_proba, label=idx)
 ax.set(
     title="Survival probabilities $\hat{S(t)}$ of CoxPH",
@@ -520,40 +531,28 @@ X_test.head().reset_index(drop=True)
 #
 # *Hint*: You can access an element of a pipeline as simply as `pipeline[idx]`.
 
-# %%
+# %% jupyter={"source_hidden": true}
 ### Your code here
 feature_names = []
 weight = []
 ###
 
-features = pd.DataFrame(
-    dict(
-        feature_name=feature_names,
-        weight=weight,
+# %%
+feature_names = cox_ph[0].get_feature_names_out()
+weights = cox_ph[-1].coef_
+
+# %%
+features = (
+    pd.DataFrame(
+        dict(
+            feature_name=feature_names,
+            weight=weights,
+        )
     )
+    .sort_values("weight")
 )
 ax = sns.barplot(features, y="feature_name", x="weight", orient="h")
-
-# %% [markdown]
-# <details><summary><i><b>Solution</b></i></summary>
-# <br>
-#
-# ```python
-# feature_names = cox_ph[0].get_feature_names_out()
-# weights = cox_ph[-1].coef_
-#
-# features = (
-#     pd.DataFrame(dict(
-#         feature_name=feature_names,
-#         weight=weights,
-#     ))
-#     .sort_values("weight", ascending=False)
-# )
-# ax = sns.barplot(features, y="feature_name", x="weight", orient="h")
-# ax.set_title("Cox PH feature importance of $\lambda(t)$");
-# ```
-#
-# </details>
+ax.set_title("Cox PH feature importance of $\lambda(t)$");
 
 # %% [markdown]
 # Finally, we compute the Brier score for our model.
@@ -561,11 +560,7 @@ ax = sns.barplot(features, y="feature_name", x="weight", orient="h")
 # %%
 from sksurv.metrics import brier_score, integrated_brier_score
 
-test_times = np.linspace(
-    y_test["duration"].min(),
-    y_test["duration"].max() - 1,
-    num=100,
-)
+
 cox_survival_proba_matrix = np.vstack([step_func(test_times) for step_func in step_funcs])
 
 _, cox_brier_scores = brier_score(
@@ -592,8 +587,8 @@ ax.set(
 )
 plt.legend();
 
-print(f"KaplanMeier IBS: {km_ibs:.4f}")
 print(f"CoxPH IBS: {cox_ibs:.4f}")
+print(f"KaplanMeier IBS: {km_ibs:.4f}")
 
 # %%
 cox_c_index = get_c_index(
@@ -602,8 +597,8 @@ cox_c_index = get_c_index(
     cox_survival_proba_matrix,
 )
 
-print(f"Kaplan Meier C-index: {km_c_index:.4f}")
 print(f"Cox PH C-index: {cox_c_index:.4f}")
+print(f"Kaplan Meier C-index: {km_c_index:.4f}")
 
 # %% [markdown]
 # We have slightly improved upon the Kaplan Meier.
@@ -664,9 +659,9 @@ ax.set(
 )
 plt.legend();
 
-print(f"KaplanMeier IBS: {km_ibs:.4f}")
-print(f"CoxPH IBS: {cox_ibs:.4f}")
 print(f"RandomSurvivalForest IBS: {rsf_ibs:.4f}")
+print(f"CoxPH IBS: {cox_ibs:.4f}")
+print(f"KaplanMeier IBS: {km_ibs:.4f}")
 
 # %%
 rsf_c_index = get_c_index(y_test["event"], y_test["duration"], rsf_survival_proba_matrix)
@@ -680,35 +675,36 @@ print(f"Kaplan Meier C-index: {km_c_index:.4f}")
 
 # %%
 import sys; sys.path.append("..")
-from models.yasgbt import YASGBTRegressor
+from models.gradient_boosted_cif import GradientBoostedCIF
 from model_selection.wrappers import PipelineWrapper
 
-gb_model = make_pipeline(
+
+gb_cif = make_pipeline(
     transformer,
-    YASGBTRegressor(n_iter=20, learning_rate=0.2),
+    GradientBoostedCIF(n_iter=20, learning_rate=0.2),
 )
-gb_model = PipelineWrapper(gb_model)
-gb_model.fit(X_train, y_train, times)
+gb_cif = PipelineWrapper(gb_cif)
+gb_cif.fit(X_train, y_train, times)
 
 # %%
-gbcif_survival_proba_matrix = gb_model.predict_survival_function(X_test, times)
+gb_survival_proba_matrix = gb_cif.predict_survival_function(X_test, test_times)
 
-_, gbcif_brier_scores = brier_score(
+_, gb_brier_scores = brier_score(
     survival_train=y_train,
     survival_test=y_test,
-    estimate=gbcif_survival_proba_matrix,
+    estimate=gb_survival_proba_matrix,
     times=test_times,
 )
 
-gbcif_ibs = integrated_brier_score(
+gb_ibs = integrated_brier_score(
     survival_train=y_train,
     survival_test=y_test,
-    estimate=gbcif_survival_proba_matrix,
+    estimate=gb_survival_proba_matrix,
     times=test_times,
 )
 
 fig, ax = plt.subplots()
-ax.plot(test_times, gbcif_brier_scores, label="GradientBoostedCIF")
+ax.plot(test_times, gb_brier_scores, label="GradientBoostedCIF")
 ax.plot(test_times, rsf_brier_scores, label="RandomSurvivalForest")
 ax.plot(test_times, cox_brier_scores, label="CoxPH")
 ax.plot(test_times, km_brier_scores, label="KaplanMeier")
@@ -719,27 +715,126 @@ ax.set(
 )
 plt.legend();
 
-print(f"GradientBoostedCIF IBS: {gbcif_ibs:.4f}")
+print(f"GradientBoostedCIF IBS: {gb_ibs:.4f}")
 print(f"RandomSurvivalForest IBS: {rsf_ibs:.4f}")
 print(f"CoxPH IBS: {cox_ibs:.4f}")
 print(f"KaplanMeier IBS: {km_ibs:.4f}")
 
 # %%
-gbcif_c_index = get_c_index(y_test["event"], y_test["duration"], gbcif_survival_proba_matrix)
+gb_c_index = get_c_index(y_test["event"], y_test["duration"], gb_survival_proba_matrix)
 
-print(f"GradientBoostedCIF C-index: {gbcif_c_index:.4f}")
+print(f"GradientBoostedCIF C-index: {gb_c_index:.4f}")
 print(f"Random Survival Index C-index: {rsf_c_index:.4f}")
 print(f"Cox PH C-index: {cox_c_index:.4f}")
 print(f"Kaplan Meier C-index: {km_c_index:.4f}")
 
 # %% [markdown]
 # ## V. Competing risks modeling with Aalen-Johanson
+#
+# So far, we've been dealing with a single kind of risk: any accident. What if we have different types of accident? This is the point of competing risks modeling. It aims at modeling the probability of incidence for different events, where these probabilities interfer with each other. A truck that had an accident is withdrawn from the fleet, and therefore can't experienced any other ones.
+#
+# For any event $k \in [1, K]$, the cumulative incidence function of the event $k$ becomes:
+#
+# $$CIF_k = P(T < t, \mathrm{event}=k)$$
+#
+# Aalen-Johanson estimates the CIF for multi-event $k$, by computing the global (any event) survival probabilities and the cause-specific hazards.
+#
+# <details><summary>Mathematical formulation</summary>
+#     
+# <br>
+# We first compute the cause-specific hazards $\lambda_k$, by simply counting for each individual duration $t_i$ the number of individuals that have experienced the event $k$ at $t_i$ ($d_{i,k}$), and the number of people still at risk at $t_i$ ($n_i$).
+#
+# $$
+# \hat{\lambda}_k(t_i)=\frac{d_{k,i}}{n_i}
+# $$
+#
+# Then, we compute the survival probability any event with Kaplan Meier any event, where we can reused the cause-specific hazards.
+#     
+# $$
+# \hat{S}(t)=\prod_{i:t_i\leq t} (1 - \frac{d_i}{n_i})=\prod_{i:t_i\leq t} (1 - \sum_k\hat{\lambda}_{k}(t_i))
+# $$
+#
+# Finally, we compute the CIF of event $k$ as the sum of the cause-specific hazards, weighted by the survival probabilities.
+#
+# $$\hat{F}_k(t)=\sum_{i:t_i\leq t} \hat{\lambda}_k(t_i) \hat{S}(t_{i-1})$$
+#     
+#     
+# </details>
+
+# %% [markdown]
+# Let's load our dataset another time. Notice that we have 3 types of event (plus the censoring 0). In the previous section, we only considered binary "any events" by applying `event > 0` to our event column.
 
 # %%
+df = pd.read_parquet("data_truck.parquet")
+df
+
+# %% [markdown]
+# Let's use lifelines to estimate the ${CIF_k}$ using Aalen-Johanson. We need to indicate which event to fit on, so we'll iteratively fit the model on all events.
 
 # %%
+from lifelines import AalenJohansenFitter
+
+total_cif = np.zeros(df.shape[0])
+
+fig, ax = plt.subplots()
+for event in [1, 2, 3]:
+    ajf = AalenJohansenFitter(calculate_variance=True)
+    ajf.fit(df["duration"], df["event"], event_of_interest=event)
+    ajf.plot(ax=ax, label=f"event {event}")
+    cif_df = ajf.cumulative_density_
+    cif_times = cif_df.index
+    total_cif += cif_df[cif_df.columns[0]].values
+
+ax.plot(cif_times, total_cif, label="total", linestyle="--", color="black")
+ax.set(title="CIFs from Aalen Johansen", xlabel="time (days)")
+plt.legend();
+
+
+# %% [markdown]
+# This non-conditional model helps us identify 3 types of events, having momentum at different times.
 
 # %% [markdown]
 # ## VI. Cumulative incidence function (CIF) using our GradientBoostedCIF
+#
+# We can now try to estimate the conditional cumulative incidence function using our GradientBoostedCIF.
 
 # %%
+def get_X_y(df):
+    y = np.empty(
+        df.shape[0],
+        dtype=[("event", np.int8), ("duration", float)],
+    )
+    y["event"] = df.pop("event")
+    y["duration"] = df.pop("duration")
+    return df, y
+
+
+# %%
+df = pd.read_parquet("data_truck.parquet")
+X, y = get_X_y(df)
+X_train, X_test, y_train, y_test = train_test_split_within(X, y)
+
+test_times = make_test_times(y_test["duration"])
+
+total_mean_cif = np.zeros(times.shape[0])
+
+fig, ax = plt.subplots()
+for event in [1, 2, 3]:    
+    gb_cif = make_pipeline(
+        transformer,
+        GradientBoostedCIF(event, n_iter=20, learning_rate=0.2),
+    )
+    gb_cif = PipelineWrapper(gb_cif)
+    
+    gb_cif.fit(X_train, y_train, times)
+    cif_matrix_k = gb_cif.predict_cumulative_incidence(X_test, test_times)
+    
+    mean_cif_k = cif_matrix_k.mean(axis=0)
+    total_mean_cif += mean_cif_k
+    ax.plot(times, mean_cif_k, label=f"event {event}")
+
+ax.plot(times, total_mean_cif, label="total", linestyle="--", color="black")
+plt.legend();
+
+# %% [markdown]
+# In the second section of this tutorial, we'll study our GradientBoostedCIF in more depth by understanding how to find the median survival probability and compute its feature importance.

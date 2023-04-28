@@ -30,6 +30,13 @@ class PipelineWrapper(BaseWrapper):
     def predict_survival_function(self, X_test, times=None):
         return self.estimator.predict_survival_function(X_test, times=times)
 
+    def predict_cumulative_incidence(self, X_test, times=None):
+        transformers = self.estimator[:-1]
+        for transformer in transformers:
+            X_test = transformer.transform(X_test)
+        estimator = self.estimator[-1]
+        return estimator.predict_cumulative_incidence(X_test, times=times)
+
 
 class SkurvWrapper(BaseWrapper):
 
