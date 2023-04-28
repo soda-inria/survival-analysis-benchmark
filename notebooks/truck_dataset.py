@@ -571,9 +571,9 @@ def plot_survival_function(event_frame, all_hazards):
     true_surv = np.exp(-any_event_hazards.cumsum(axis=-1))
 
     plt.step(times, surv_probs, label="KM estimator $\hat{S}(t)$")
-    plt.step(times, true_surv.mean(axis=0), label="True $S(t)$")
+    plt.step(times, true_surv.mean(axis=0), label="True $E_{x_i \in X} [S(t; x_i)]$")
     plt.legend()
-    plt.title("$\hat{S}(t)$ for fixed condition")
+    plt.title("Survival functions")
     
     
 plot_survival_function(truck_data, all_hazards)
@@ -597,13 +597,14 @@ def plot_cumulative_incidence_functions(event_frame, all_hazards):
     any_event_hazards = all_hazards.sum(axis=0)
     true_surv = np.exp(-any_event_hazards.cumsum(axis=-1))
 
+    plt.suptitle("Cause-specific cumulative incidence functions")
     for event_id, (ax, hazards_i) in enumerate(zip(axes, all_hazards), 1):
         ajf = AalenJohansenFitter(calculate_variance=True)
         ajf.fit(event_frame["duration"], event_frame["event"], event_of_interest=event_id)
-        ajf.plot(label=f"Predicted $CIF_{event_id}$", ax=ax)
+        ajf.plot(label=f"Aalen Johansen estimate of $CIF_{event_id}$", ax=ax)
 
         cif = (hazards_i * true_surv).cumsum(axis=-1).mean(axis=0)
-        ax.plot(cif, label=f"True $CIF_{event_id}$"),
+        ax.plot(cif, label="True $E_{x_i \in X}" + f"[CIF_{event_id}](t; x_i)$"),
         ax.set(ylim=[-.01, 1.01]),
         ax.legend()
         
