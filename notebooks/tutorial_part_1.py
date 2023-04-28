@@ -30,7 +30,7 @@
 #
 # Survival analysis is a time-to-event regression problem, with censored data. We call censored all individuals that didn't experience the event during the range of the observation window.
 #
-# In our setting, we're mostly interested in right-censored data, meaning we either lost track of the individual, or the study ended before the event of the individual could be observed.
+# In our setting, we're mostly interested in right-censored data, meaning we that the event of interest did not occur before the end of the observation period (typically the time of collection of the dataset):
 #
 # <figure>
 # <img src="censoring.png" style="width:80%">
@@ -39,8 +39,15 @@
 #
 # Individuals can join the study at the same or different times, and the study may or may not be ended by the time of observation.
 #
-# Survival analysis techniques have wide applications. In the medical landscape, events can consist in patients dying of cancer, or on the contrary recovering from some disease. In predictive maintenance, events can model machine failure. In marketing, we can consider user churning as events, or we could focus on users becoming premium.
+# Survival analysis techniques have wide applications:
 #
+# - In the **medical** landscape, events can consist in patients dying of cancer, or on the contrary recovering from some disease.
+# - In **predictive maintenance**, events can model machine failure.
+# - In **insurance**, we are interesting in modeling the time to next claim for a portfolio of insurance contracts.
+# - In **marketing**, we can consider user churning as events, or we could focus on users becoming premium.
+#
+#
+# As we will see, for all those application, it is not possible to directly train a machine learning based regression model on such  **right-censored** time-to-event target since we only have a lower bound on the true time to event for some data points. **Naively removing such points from the data would cause the model predictions to be biased**.
 #
 # ### I.2 Our target `y`
 #
@@ -56,10 +63,10 @@ import pandas as pd
 import numpy as np
 
 df = pd.read_parquet("data_truck_no_covariates.parquet")
-df[["event", "duration"]].head()
+df[["event", "duration"]]
 
 # %% [markdown]
-# In this exemple, we study the accident of truck-driver pairs. Censored pairs (when event is False) haven't had a mechanical failure or an accident during the study.
+# In this exemple, we study the accident of truck-driver pairs. Censored pairs (when event is 0 or False) haven't had a mechanical failure or an accident during the study.
 
 # %% [markdown]
 # ### I.3 Why is it a problem to train time-to-event regression models?
