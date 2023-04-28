@@ -62,8 +62,8 @@
 import pandas as pd
 import numpy as np
 
-df = pd.read_parquet("data_truck_no_covariates.parquet")
-df[["event", "duration"]]
+truck_failure_events = pd.read_parquet("truck_failure_10k_any_event.parquet")
+truck_failure_events
 
 # %% [markdown]
 # In this exemple, we study the accident of truck-driver pairs. Censored pairs (when event is 0 or False) haven't had a mechanical failure or an accident during the study.
@@ -82,37 +82,51 @@ df[["event", "duration"]]
 # Note that we have access to the random variable $T$ because we generated this synthetic dataset. With real-world data, you only have access to $Y = \min(T, C)$, where $C$ is a random variable representing the censoring time.
 
 # %%
-stats_1 = (
-    df.loc[df["event"]]["duration"]
+naive_stats_1 = (
+    truck_failure_events.query("event == True")["duration"]
     .apply(["mean", "median"])
 )
 print(
-    f"Biased method 1 - mean: {stats_1['mean']:.2f} days, "
-    f"median: {stats_1['median']:.2f} days"
+    f"Biased method 1 - mean: {naive_stats_1['mean']:.2f} days, "
+    f"median: {naive_stats_1['median']:.2f} days"
 )
 
 # %%
-max_duration = df["duration"].max()
-stats_2 = (
+max_duration = truck_failure_events["duration"].max()
+naive_stats_2 = (
     pd.Series(
-        np.where(df["event"], df["duration"], max_duration)
+        np.where(
+            truck_failure_events["event"],
+            truck_failure_events["duration"],
+            max_duration,
+        )
     )
     .apply(["mean", "median"])
 )
 print(
-    f"Biased method 2 - mean: {stats_2['mean']:.2f} days, "
-    f"median: {stats_2['median']:.2f} days"
+    f"Biased method 2 - mean: {naive_stats_2['mean']:.2f} days, "
+    f"median: {naive_stats_2['median']:.2f} days"
 )
 
+# %% [markdown]
+# Neither naive methods can estimate the true mean and median failure times. In our case, the data comes from a simple truck fleed model and we have access to the uncensored times (we can wait as long as we want to extend the observation period as needed to have all truck fail).
+#
+# Let's have a look at the true mean and median time-to-failure:
+
 # %%
-true_stats = df["ground_truth_duration"].apply(["mean", "median"])
+truck_failure_events_uncensored = pd.read_parquet("truck_failure_10k_any_event_uncensored.parquet")
+
+# %%
+true_stats = truck_failure_events_uncensored["duration"].apply(["mean", "median"])
 print(
     f"Ground truth - mean: {true_stats['mean']:.2f} days, "
     f"median: {true_stats['median']:.2f} days"
 )
 
 # %% [markdown]
-# We see that none of this naive methods gives a good estimate of the ground truth. A naive regression would try to estimate $\mathbb{E}[T|X]$, where $X$ are our covariates, but we only have access to $Y = \min(T, C)$.
+# We see that none of neither of the naive methods gives a good estimate of the ground truth.
+#
+# If we have access to covariates $X$ (also known as input features in machine learning), a naive regression method would try to estimate $\mathbb{E}[T|X]$, where $X$ are our covariates, but we only have access to $Y = \min(T, C)$ where $T$ is the true time to failure and $C$ is the censoring duration.
 
 # %% [markdown]
 # ## II. Single event survival analysis with Kaplan Meier
@@ -125,11 +139,19 @@ print(
 #
 # This represents the probability that an event doesn't occur at or before some given time $t$, i.e. that it happens at some time $T > t$.
 #
-# The most commonly used method to estimate this function is the **Kaplan Meier** estimator. It gives us an unbiased estimate of the survival probability, ignoring any information available in $X$.
+# The most commonly used method to estimate this function is the **Kaplan Meier** estimator. It gives us an **unbiased estimate of the survival probability**.
 #
 # $$\hat{S}(t)=\prod_{i: t_i\leq t} (1 - \frac{d_i}{n_i})$$
 #
-# Where $t_i$ is the time of event for individual $i$ that experienced the event, $d_i$ is the number of individuals having experienced the event at $t_i$, and $n_i$ are the remaining individuals at risk at $t_i$. Note that individuals that were censored before $t_i$ are no longer considered at risk at $t_i$.
+# Where:
+#
+# - $t_i$ is the time of event for individual $i$ that experienced the event,
+# - $d_i$ is the number of individuals having experienced the event at $t_i$,
+# - $n_i$ are the remaining individuals at risk at $t_i$.
+#
+# Note that **individuals that were censored before $t_i$ are no longer considered at risk at $t_i$**.
+#
+# Note that, contrary to machine learning regressors, this estimator is **unconditional**: it only extracts information from $y$ only, and cannot model information about each individual typically provided in a feature matrix $X$.
 #
 # In real-world application, we aim at estimating $\mathbb{E}[T]$ or $Q_{50\%}[T]$. The latter quantity represents the median survival duration i.e. the duration before 50% of our population at risk experiment the event. We can also be interested in estimating the survival probability after some reference time $P(T > t_{ref})$, e.g. a random clinical trial estimating the capacity of a drug to improve the survival probability after 6 months.
 
@@ -138,13 +160,15 @@ import plotly.express as px
 from sksurv.nonparametric import kaplan_meier_estimator
 
 
-times, survival_probas = kaplan_meier_estimator(df["event"], df["duration"])
+times, survival_probs = kaplan_meier_estimator(
+    truck_failure_events["event"], truck_failure_events["duration"]
+)
 
-km_proba = pd.DataFrame(dict(time=times, survival_proba=survival_probas))
+km_proba = pd.DataFrame(dict(time=times, survival_probs=survival_probs))
 fig = px.line(
     km_proba,
     x="time",
-    y="survival_proba",
+    y="survival_probs",
     title="Kaplan-Meier survival probability",
 )
 fig.add_hline(
@@ -170,98 +194,135 @@ fig.update_layout(
 
 # %% [markdown]
 # ***Exercice*** <br>
-# Based on `times` and `survival_proba`, estimate the median survival time.
+# Based on `times` and `survival_probs`, estimate the median survival time.
 # *Hint: Use `np.searchsorted`*.
 
 # %%
-def get_median_survival_proba(times, survival_proba):
+def get_median_survival_probs(times, survival_probs):
     """Get the closest time to a survival proba of 50%.
     """
     ### Your code here
-    median_survival_proba_time = 0
+    median_survival_probs_time = 0
     ###
-    return median_survival_proba_time
+    return median_survival_probs_time
 
 
-# %% jupyter={"source_hidden": true}
-### Solution
 
-def get_median_survival_proba(times, survival_proba):
-    """Get the closest time to a survival proba of 50%.
-    """
-    # Search sorted needs an ascending ordered array.
-    sorted_survival_proba = survival_proba[::-1]
-    median_idx = np.searchsorted(sorted_survival_proba, 0.50)
-    median_survival_proba_time = times[-median_idx]
-    return median_survival_proba_time
+
+
+
+
+
+
+
+
+
+get_median_survival_probs(times, survival_probs)
 
 
 # %%
-get_median_survival_proba(times, survival_probas)
+### Solution
+
+def get_median_survival_probs(times, survival_probs):
+    """Get the closest time to a survival proba of 50%.
+    """
+    # Search sorted needs an ascending ordered array.
+    sorted_survival_probs = survival_probs[::-1]
+    median_idx = np.searchsorted(sorted_survival_probs, 0.50)
+    median_survival_probs_time = times[-median_idx]
+    return median_survival_probs_time
+
+get_median_survival_probs(times, survival_probs)
+
+# %% [markdown]
+# This should be an unbiased estimate of the median uncensored duration:
+
+# %%
+truck_failure_events_uncensored["duration"].median()
 
 # %% [markdown]
 # We can enrich our analysis by introducing covariates, that are statistically associated to the events and durations.
 
 # %%
-df = pd.read_parquet("data_truck.parquet")
-df["event"] = df["event"] > 0
-df
+truck_failure_features = pd.read_parquet("truck_failure_10k_features.parquet")
+truck_failure_features
+
+# %%
+truck_failure_features_and_events = pd.concat(
+    [truck_failure_features, truck_failure_events], axis="columns"
+)
+truck_failure_features_and_events
 
 # %% [markdown]
 # For exemple, let's use Kaplan Meier to get a sense of the impact of the **brand**, by stratifying on this variable.
 #
-# ***Exercice*** <br>
+# ***Exercice***
+#
 # Plot the stratified Kaplan Meier of the brand, i.e. for each different brand:
-# 1. Filter the dataset on this brand
-# 2. Estimate the survival probability with Kaplan Meier
-# 3. Subplot this survival probability.
+# 1. Filter the dataset on this brand using pandas, for instance using the `.query` method of the dataframe;
+# 2. Estimate the survival curve with Kaplan Meier on each brand subset;
+# 3. Plot the survival curve for each subset.
 #
 # What are the limits of this method?
 
 # %%
-import plotly.graph_objects as go
+import matplotlib.pyplot as plt
+
 
 def plot_brands_km(df):
     brands = df["brand"].unique()
     fig_data = []
     for brand in brands:
-        ### Your code here
+        # TODO: replace the following by your code here:
         pass
-        ###
-    fig = go.Figure(fig_data)
-    fig.show()
 
+    plt.title("Survival curves by brand")
 
-# %% jupyter={"source_hidden": true}
-import plotly.graph_objects as go
+    
+plot_brands_km(truck_failure_features_and_events)
+
+# %% [markdown]
+# **Solution**: click below to expand the cell:
+
+# %% jupyter={"outputs_hidden": true, "source_hidden": true}
+import matplotlib.pyplot as plt
+
 
 def plot_brands_km(df):
     brands = df["brand"].unique()
     fig_data = []
     for brand in brands:
-        df_brand = df.loc[df["brand"] == brand]
-        times_, survival_probas_ = kaplan_meier_estimator(df_brand["event"], df_brand["duration"])
-        fig_data.append(
-            go.Scatter(x=times_, y=survival_probas_, name=brand)
-        )
-    fig = go.Figure(fig_data)
-    fig.show()
+        df_brand = df.query("brand == @brand")
+        x, y = kaplan_meier_estimator(df_brand["event"], df_brand["duration"])
+        plt.plot(x, y, label=brand)
 
-
-# %%
-plot_brands_km(df)
+    plt.legend()
+    plt.title("Survival curves by brand")
+    
+plot_brands_km(truck_failure_features_and_events)
 
 # %% [markdown]
-# The stratified method quickly become impracticable as the covariate groups grow. We need estimator that can handle covariates.
+# We can observe that drivers of "Cheapz" trucks seem to experiment a higher number of failures in the early days but then the cumulative number of failures for each group seem to become comparable. Very truck seem to operate after 2500 days (~7 years) without having experienced any failure.
 #
-# Next, we'll study how to add covariates $X$ to our analysis.
+# The stratified KM method is nice to compare two groups but quickly becomes impracticable as the number of covariate groups grow. We need estimator that can handle covariates.
 
 # %% [markdown]
-# ## III. Calibration using the integrated brier score (IBS)
+# Let's now attempt to quantify how a survival curve estimated on a training set performs on a test set.
+#
+# ## III. Survival model evaluation using the Integrated Brier Score (IBS) and the Concordance Index (C-index)
 
 # %% [markdown]
-# The Brier score is a proper scoring rule that measures the calibration of our survival probability predictions. It is comprised between 0 and 1 (lower is better).
-# It answers the question "how close to the real probabilities are our estimates?". A good calibration makes our predictions easier to explain.
+# The Brier score and the C-index are measures that assess the quality of predicted survival curve on a sample of data. The Brier score is a proper scoring rule, meaning that a model has minimal Brier score if and only if it correctly estimates the true survival probabilities induced by the underlying data generating process. In that respect the **Brier score** assesses both the **calibration** and the **ranking power** of a survival probability estimator.
+#
+# On the other hand, the **C-index** only assesses the **ranking power**: it is invariant to a monotonic transform of the survival probabilities. It only focus on the ability of a predictive survival model to identify which individual is likely to fail first out of any pair of two individuals.
+#
+#
+#
+# It is comprised between 0 and 1 (lower is better).
+# It answers the question "how close to the real probabilities are our estimates?".
+#
+#
+#
 
 # %% [markdown]
 # <details><summary>Mathematical formulation</summary>
@@ -281,70 +342,87 @@ plot_brands_km(df)
 # </details>
 
 # %%
-times, survival_proba = kaplan_meier_estimator(df["event"], df["duration"])
+from sklearn.model_selection import train_test_split
 
+
+def train_test_split_within(X, y, **kwargs):
+    """Ensure that test data durations are within train data durations."""
+    X_train, X_test, y_train, y_test = train_test_split(X, y, **kwargs)
+    mask_duration_inliers = y_test["duration"] < y_train["duration"].max()
+    y_test = y_test[mask_duration_inliers]
+    X_test = X_test[mask_duration_inliers]
+    return X_train, X_test, y_train, y_test
+
+
+X = truck_failure_features
+y = truck_failure_events
+
+X_train, X_test, y_train, y_test = train_test_split_within(X, y, random_state=0)
 
 # %%
-def make_target(event, duration):
-    """Return scikit-survival's specific target format.
-    """
-    y = np.empty(
-        shape=event.shape[0],
-        dtype=[("event", bool), ("duration", float)],
-    )
-    y["event"] = event
-    y["duration"] = duration
-    
-    return y
+from scipy.interpolate import interp1d
 
+km_times, km_survival_probs = kaplan_meier_estimator(
+    y_train["event"], y_train["duration"]
+)
 
-def make_test_times(duration):
-    """Bound times to the range of duration.
-    """
-    return np.linspace(
-        duration.min(),
-        duration.max() - 1,
-        num=100,
-    )
-
+km_predict = interp1d(
+    km_times,
+    km_survival_probs,
+    kind="previous",
+    bounds_error=False,
+    fill_value="extrapolate",
+)
 
 # %%
 from sksurv.metrics import brier_score
-from sksurv.functions import StepFunction
 
-# Create a callable function from times and survival proba.
-survival_func = StepFunction(times, survival_proba)
+def make_test_times(duration):
+    """Bound times to the range of duration."""
+    return np.linspace(duration.min(), duration.max() - 1, num=100)
 
-# Bound `times` to the range of `duration`.
-# This is needed to compute the brier score.
-times = make_test_times(df["duration"])
+time_grid = make_test_times(y_test["duration"])
 
-# Call the function with the new `times` variable and
-# get the matching survival proba.
-survival_proba = survival_func(times)
+# KM is a constant predictor: it always estimate the same survival
+# curve for any individual in the training and test sets as it does
+#not depend on features values of the X_train and X_test matrices.
+km_curve = km_predict(time_grid)
+y_pred_km_train = np.vstack([km_curve] * y_train.shape[0])
+y_pred_km_test = np.vstack([km_curve] * y_test.shape[0])
 
-# Stack `N` survival proba vectors to simulate predictions
-# for all individuals.
-n_samples = df.shape[0]
-km_survival_proba_matrix = np.vstack([survival_proba] * n_samples)
 
-# Adapt the event and duration to scikit-survival specific
-# numpy array target.
-y = make_target(df["event"], df["duration"])
+def as_sksurv_recarray(y_frame):
+    """Return scikit-survival's specific target format."""
+    y_recarray = np.empty(
+        shape=y_frame.shape[0],
+        dtype=[("event", np.bool_), ("duration", np.float64)],
+    )
+    y_recarray["event"] = y_frame["event"]
+    y_recarray["duration"] = y_frame["duration"]
+    return y_recarray
 
-_, km_brier_scores = brier_score(
-    survival_train=y,
-    survival_test=y,
-    estimate=km_survival_proba_matrix,
-    times=times,
+
+_, km_brier_scores_test = brier_score(
+    survival_train=as_sksurv_recarray(y_train),
+    survival_test=as_sksurv_recarray(y_test),
+    estimate=y_pred_km_test,
+    times=time_grid,
+)
+_, km_brier_scores_train = brier_score(
+    survival_train=as_sksurv_recarray(y_train),
+    survival_test=as_sksurv_recarray(y_train),
+    estimate=y_pred_km_train,
+    times=time_grid,
 )
 
 # %%
 from matplotlib import pyplot as plt
 import seaborn as sns; sns.set_style("darkgrid")
 
-plt.plot(times, km_brier_scores);
-plt.title("Brier score of Kaplan Meier estimation (lower is better)");
+plt.plot(times, km_brier_scores_train, label="train");
+plt.plot(times, km_brier_scores_test, label="test");
+plt.title("Time-varying Brier score of Kaplan Meier estimation (lower is better)");
+plt.legend()
 plt.xlabel("time (days)");
 
 # %% [markdown]
@@ -352,15 +430,27 @@ plt.xlabel("time (days)");
 # $$IBS = \frac{1}{t_{max} - t_{min}}\int^{t_{max}}_{t_{min}} BS(t) dt$$
 
 # %%
-from sksurv.metrics import integrated_brier_score
-
-km_ibs = integrated_brier_score(
-    survival_train=y,
-    survival_test=y,
-    estimate=km_survival_proba_matrix,
+km_ibs_train = integrated_brier_score(
+    survival_train=as_sksurv_recarray(y_train),
+    survival_test=as_sksurv_recarray(y_train),
+    estimate=y_pred_km_train,
     times=times,
 )
-km_ibs
+print(f"IBS of Kaplan-Meier estimator on train set: {km_ibs:.3f}")
+
+# %%
+from sksurv.metrics import integrated_brier_score
+
+km_ibs_test = integrated_brier_score(
+    survival_train=as_sksurv_recarray(y_train),
+    survival_test=as_sksurv_recarray(y_test),
+    estimate=y_pred_km_test,
+    times=times,
+)
+print(f"IBS of Kaplan-Meier estimator on test set: {km_ibs_test:.3f}")
+
+# %% [markdown]
+# Since the KM estimator always predicts the same constant survival curve for any samples in `X_train` or `X_test`, it has the same IBS on both subsets. Still, it's an interesting baseline because it's well calibrated among all the constant survival curve predictors.
 
 # %% [markdown]
 # Finally, let's also introduce the concordance index (C-index). This metric evaluates the discriminative power of a model by comparing pairs of individuals having experienced the event. The C-index of a pair $(i, j)$ is maximized when individual $i$ has experienced the event before $j$ and the estimated risk of $i$ is higher than the one of $j$. 
@@ -392,33 +482,35 @@ km_ibs
 from sksurv.metrics import concordance_index_censored
 
 
-def get_c_index(event, duration, survival_proba_matrix):
-    if survival_proba_matrix.ndim != 2:
+def get_c_index(event, duration, survival_probs_matrix):
+    if survival_probs_matrix.ndim != 2:
         raise ValueError(
-            "`survival_probas` must be a 2d array of "
+            "`survival_probs` must be a 2d array of "
             "shape (n_samples, times)."
         )
     # Cumulative hazard is also known as risk.
-    cumulative_hazard = survival_to_risk_estimate(survival_proba_matrix)
+    cumulative_hazard = survival_to_risk_estimate(survival_probs_matrix)
     metrics = concordance_index_censored(event, duration, cumulative_hazard)
     return metrics[0]
 
 
-def survival_to_risk_estimate(survival_proba_matrix):
-    return -np.log(survival_proba_matrix + 1e-8).sum(axis=1)
+def survival_to_risk_estimate(survival_probs_matrix):
+    return -np.log(survival_probs_matrix + 1e-8).sum(axis=1)
 
 
 # %%
-km_c_index = get_c_index(df["event"], df["duration"], km_survival_proba_matrix)
-km_c_index
+km_c_index_test = get_c_index(y_test["event"], y_test["duration"], y_pred_km_test)
+km_c_index_test
 
 # %% [markdown]
 # This is equivalent to a random prediction. Indeed, as our Kaplan Meier is a descriptive statistics, it can't be used to rank individuals predictions.
 
 # %% [markdown]
+# Next, we'll study how to add covariates $X$ to our analysis.
+#
 # ## IV. Predictive survival analysis
 #
-# We now introduce some quantities which are going to be at the core of our predictions.
+# We now introduce some quantities which are going to be at the core of many survival analysis models.
 #
 # The most important concept is the hazard rate $\lambda(t)$. This quantity represents the "speed of failure" or the probability that an event occurs in the next $dt$, given that it hasn't occured yet. This can be written as:
 #
@@ -450,9 +542,6 @@ km_c_index
 # Let's run it on our truck-driver dataset.
 
 # %%
-df
-
-# %%
 duration = df.pop("duration")
 event = df.pop("event")
 y = make_target(event, duration)
@@ -460,16 +549,6 @@ X = df
 
 # %%
 from sklearn.model_selection import train_test_split
-
-def train_test_split_within(X, y, **kwargs):
-    """Ensure that all our test data durations are within 
-    our observation train data durations.
-    """
-    X_train, X_test, y_train, y_test = train_test_split(X, y, **kwargs)
-    mask_duration_inliers = y_test["duration"] < y_train["duration"].max()
-    y_test = y_test[mask_duration_inliers]
-    X_test = X_test[mask_duration_inliers]
-    return X_train, X_test, y_train, y_test
 
 
 # %%
@@ -479,7 +558,7 @@ X_train.shape, X_test.shape
 # %% [markdown]
 # ***Exercice***
 #
-# Create a `ColumnTransformer` to encode categories `brand` and `model_id`.
+# Create a `ColumnTransformer` to encode categories `brand` and `truck_model`.
 #
 # *Hint*: Use `sklearn.preprocessing.OneHotEncoder` and `sklearn.compose.make_column_transformer`.
 
@@ -491,14 +570,20 @@ from sklearn.preprocessing import OneHotEncoder
 transformer = None
 ###
 
-# %% jupyter={"source_hidden": true}
+# %%
 from sklearn.compose import make_column_transformer
 from sklearn.preprocessing import OneHotEncoder
 
 transformer = make_column_transformer(
-    (OneHotEncoder(), ["brand", "model_id"]),
+    (OneHotEncoder(), ["brand", "truck_model"]),
     remainder="passthrough",
 )
+
+# %%
+X_train
+
+# %%
+y_train
 
 # %%
 from sklearn.pipeline import make_pipeline
@@ -516,8 +601,8 @@ test_times = make_test_times(y_test["duration"])
 
 fig, ax = plt.subplots()
 for idx, step_func in enumerate(step_funcs[:5]):
-    survival_proba = step_func(test_times)
-    ax.plot(times, survival_proba, label=idx)
+    survival_probs = step_func(test_times)
+    ax.plot(times, survival_probs, label=idx)
 ax.set(
     title="Survival probabilities $\hat{S(t)}$ of CoxPH",
     xlabel="time (days)",
@@ -538,7 +623,7 @@ X_test.head().reset_index(drop=True)
 #
 # *Hint*: You can access an element of a pipeline as simply as `pipeline[idx]`.
 
-# %% jupyter={"source_hidden": true}
+# %%
 ### Your code here
 feature_names = []
 weight = []
@@ -568,19 +653,19 @@ ax.set_title("Cox PH feature importance of $\lambda(t)$");
 from sksurv.metrics import brier_score, integrated_brier_score
 
 
-cox_survival_proba_matrix = np.vstack([step_func(test_times) for step_func in step_funcs])
+cox_survival_probs_matrix = np.vstack([step_func(test_times) for step_func in step_funcs])
 
 _, cox_brier_scores = brier_score(
     survival_train=y_train,
     survival_test=y_test,
-    estimate=cox_survival_proba_matrix,
+    estimate=cox_survival_probs_matrix,
     times=test_times,
 )
 
 cox_ibs = integrated_brier_score(
     survival_train=y_train,
     survival_test=y_test,
-    estimate=cox_survival_proba_matrix,
+    estimate=cox_survival_probs_matrix,
     times=test_times,
 )
 
@@ -601,7 +686,7 @@ print(f"KaplanMeier IBS: {km_ibs:.4f}")
 cox_c_index = get_c_index(
     y_test["event"],
     y_test["duration"],
-    cox_survival_proba_matrix,
+    cox_survival_probs_matrix,
 )
 
 print(f"Cox PH C-index: {cox_c_index:.4f}")
@@ -627,8 +712,8 @@ step_funcs = rsf.predict_survival_function(X_test)
 
 fig, ax = plt.subplots()
 for idx, step_func in enumerate(step_funcs[:5]):
-    survival_proba = step_func(test_times)
-    ax.plot(test_times, survival_proba, label=idx)
+    survival_probs = step_func(test_times)
+    ax.plot(test_times, survival_probs, label=idx)
 ax.set(
     title="Survival probabilities $\hat{S}(t)$ of Random Survival Forest",
     xlabel="time (days)",
@@ -637,21 +722,21 @@ ax.set(
 plt.legend();
 
 # %%
-rsf_survival_proba_matrix = np.vstack(
+rsf_survival_probs_matrix = np.vstack(
     [step_func(test_times) for step_func in step_funcs]
 )
 
 _, rsf_brier_scores = brier_score(
     survival_train=y_train,
     survival_test=y_test,
-    estimate=rsf_survival_proba_matrix,
+    estimate=rsf_survival_probs_matrix,
     times=test_times,
 )
 
 rsf_ibs = integrated_brier_score(
     survival_train=y_train,
     survival_test=y_test,
-    estimate=rsf_survival_proba_matrix,
+    estimate=rsf_survival_probs_matrix,
     times=test_times,
 )
 
@@ -671,7 +756,7 @@ print(f"CoxPH IBS: {cox_ibs:.4f}")
 print(f"KaplanMeier IBS: {km_ibs:.4f}")
 
 # %%
-rsf_c_index = get_c_index(y_test["event"], y_test["duration"], rsf_survival_proba_matrix)
+rsf_c_index = get_c_index(y_test["event"], y_test["duration"], rsf_survival_probs_matrix)
 
 print(f"Random Survival Index C-index: {rsf_c_index:.4f}")
 print(f"Cox PH C-index: {cox_c_index:.4f}")
@@ -694,19 +779,19 @@ gb_cif = PipelineWrapper(gb_cif)
 gb_cif.fit(X_train, y_train, times)
 
 # %%
-gb_survival_proba_matrix = gb_cif.predict_survival_function(X_test, test_times)
+gb_survival_probs_matrix = gb_cif.predict_survival_function(X_test, test_times)
 
 _, gb_brier_scores = brier_score(
     survival_train=y_train,
     survival_test=y_test,
-    estimate=gb_survival_proba_matrix,
+    estimate=gb_survival_probs_matrix,
     times=test_times,
 )
 
 gb_ibs = integrated_brier_score(
     survival_train=y_train,
     survival_test=y_test,
-    estimate=gb_survival_proba_matrix,
+    estimate=gb_survival_probs_matrix,
     times=test_times,
 )
 
@@ -728,7 +813,7 @@ print(f"CoxPH IBS: {cox_ibs:.4f}")
 print(f"KaplanMeier IBS: {km_ibs:.4f}")
 
 # %%
-gb_c_index = get_c_index(y_test["event"], y_test["duration"], gb_survival_proba_matrix)
+gb_c_index = get_c_index(y_test["event"], y_test["duration"], gb_survival_probs_matrix)
 
 print(f"GradientBoostedCIF C-index: {gb_c_index:.4f}")
 print(f"Random Survival Index C-index: {rsf_c_index:.4f}")
