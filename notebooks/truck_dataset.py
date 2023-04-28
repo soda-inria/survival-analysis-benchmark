@@ -135,7 +135,7 @@ trucks = pd.DataFrame(
             for m in truck_model_names
         ],
         "ux": [.2, .5, .7, .9, 1.0],
-        "material_quality": [.95, .92, .90, .88, .85],
+        "material_quality": [.95, .92, .85, .7, .65],
     }
 ).merge(brand_quality)
 
@@ -256,7 +256,7 @@ plt.legend();
 # +
 def operational_hazards(df, t):
     # Weibull hazards with k = 1 is just a constant over time:
-    baseline = weibull_hazard(t, k=1, s=1.5e4)
+    baseline = weibull_hazard(t, k=1, s=8e3)
     s = (
         ((1 - df["driver_skill"]) * (1 - df["ux"]) + .001) * df["usage_rate"]
     ).to_numpy()
@@ -290,7 +290,7 @@ plt.legend();
 # +
 def fatigue_hazards(df, t):
     return np.vstack([
-        weibull_hazard(t, k=6 * material_quality, s=4e3) * usage_rate
+        0.5 * weibull_hazard(t, k=6 * material_quality, s=4e3) * usage_rate
         for material_quality, usage_rate in zip(df["material_quality"], df["usage_rate"])
     ])
 
@@ -619,18 +619,24 @@ array_names
 # Let's sample a larger event dataset to be able to assess the sample and computational complexities of various predictive methods:
 
 # +
+from joblib import Parallel, delayed
+
 truck_failure_100k = sample_driver_truck_pairs_with_metadata(100_000, random_seed=0)
 chunk_size = 1000
 n_chunks, remainder = divmod(truck_failure_100k.shape[0], chunk_size)
 assert remainder == 0
 
-all_event_chunks = []
-for chunk_idx in range(n_chunks):
+
+def sample_chunk(data, chunk_idx):
     start, stop = chunk_idx * chunk_size, (chunk_idx + 1) * chunk_size
-    features_chunk = truck_failure_100k.iloc[start:stop]
+    features_chunk = data.iloc[start:stop]
     event_chunk, _, _ = sample_competing_events(features_chunk, random_seed=chunk_idx)
-    all_event_chunks.append(event_chunk)
-    
+    return event_chunk
+
+
+all_event_chunks = Parallel(n_jobs=4, verbose=10)(
+    delayed(sample_chunk)(truck_failure_100k, i) for i in range(n_chunks)
+)
 truck_failure_100k_events = pd.concat(all_event_chunks, axis="rows")
 plot_stacked_occurrences(truck_failure_100k_events)
 # -
@@ -657,5 +663,3 @@ plot_survival_function(truck_failure_fc_events, all_hazards_fc)
 plot_cumulative_incidence_functions(truck_failure_fc_events, all_hazards_fc)
 
 # We should see that the Aalen-Johansen method provides an accurate estimators for the unconditional competing hazards, even with few samples!
-
-

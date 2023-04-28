@@ -284,7 +284,7 @@ plot_brands_km(truck_failure_features_and_events)
 # %% [markdown]
 # **Solution**: click below to expand the cell:
 
-# %% jupyter={"outputs_hidden": true, "source_hidden": true}
+# %%
 import matplotlib.pyplot as plt
 
 
@@ -377,11 +377,13 @@ km_predict = interp1d(
 # %%
 from sksurv.metrics import brier_score
 
-def make_test_times(duration):
+def make_test_time_grid(duration):
     """Bound times to the range of duration."""
-    return np.linspace(duration.min(), duration.max() - 1, num=100)
+    # Some survival models can fail to predict near the boundary of the
+    # range of durations observed on the training set.
+    return np.linspace(duration.min() + 1, duration.max() - 1, num=100)
 
-time_grid = make_test_times(y_test["duration"])
+time_grid = make_test_time_grid(y_test["duration"])
 
 # KM is a constant predictor: it always estimate the same survival
 # curve for any individual in the training and test sets as it does
@@ -402,16 +404,10 @@ def as_sksurv_recarray(y_frame):
     return y_recarray
 
 
-_, km_brier_scores_test = brier_score(
+_, km_brier_scores = brier_score(
     survival_train=as_sksurv_recarray(y_train),
     survival_test=as_sksurv_recarray(y_test),
     estimate=y_pred_km_test,
-    times=time_grid,
-)
-_, km_brier_scores_train = brier_score(
-    survival_train=as_sksurv_recarray(y_train),
-    survival_test=as_sksurv_recarray(y_train),
-    estimate=y_pred_km_train,
     times=time_grid,
 )
 
@@ -419,8 +415,7 @@ _, km_brier_scores_train = brier_score(
 from matplotlib import pyplot as plt
 import seaborn as sns; sns.set_style("darkgrid")
 
-plt.plot(times, km_brier_scores_train, label="train");
-plt.plot(times, km_brier_scores_test, label="test");
+plt.plot(time_grid, km_brier_scores, label="test");
 plt.title("Time-varying Brier score of Kaplan Meier estimation (lower is better)");
 plt.legend()
 plt.xlabel("time (days)");
@@ -430,30 +425,35 @@ plt.xlabel("time (days)");
 # $$IBS = \frac{1}{t_{max} - t_{min}}\int^{t_{max}}_{t_{min}} BS(t) dt$$
 
 # %%
-km_ibs_train = integrated_brier_score(
-    survival_train=as_sksurv_recarray(y_train),
-    survival_test=as_sksurv_recarray(y_train),
-    estimate=y_pred_km_train,
-    times=times,
-)
-print(f"IBS of Kaplan-Meier estimator on train set: {km_ibs:.3f}")
-
-# %%
 from sksurv.metrics import integrated_brier_score
 
 km_ibs_test = integrated_brier_score(
     survival_train=as_sksurv_recarray(y_train),
     survival_test=as_sksurv_recarray(y_test),
     estimate=y_pred_km_test,
-    times=times,
+    times=time_grid,
 )
 print(f"IBS of Kaplan-Meier estimator on test set: {km_ibs_test:.3f}")
 
 # %% [markdown]
 # Since the KM estimator always predicts the same constant survival curve for any samples in `X_train` or `X_test`, it has the same IBS on both subsets. Still, it's an interesting baseline because it's well calibrated among all the constant survival curve predictors.
+#
+# For instance we could compare to a model that would predict a linear decrease of the survival probability over time and measure the IBS on the same test data. The KM-survival curve is hopefully better than such a dummy predictor:
+
+# %%
+linear_survival_curve = np.linspace(1.0, 0.0, time_grid.shape[0])
+constant_linear_survival_curve = [linear_survival_curve] * y_test.shape[0]
+
+linear_survival_ibs_test = integrated_brier_score(
+    survival_train=as_sksurv_recarray(y_train),
+    survival_test=as_sksurv_recarray(y_test),
+    estimate=constant_linear_survival_curve,
+    times=time_grid,
+)
+print(f"IBS of Kaplan-Meier estimator on test set: {linear_survival_ibs_test:.3f}")
 
 # %% [markdown]
-# Finally, let's also introduce the concordance index (C-index). This metric evaluates the discriminative power of a model by comparing pairs of individuals having experienced the event. The C-index of a pair $(i, j)$ is maximized when individual $i$ has experienced the event before $j$ and the estimated risk of $i$ is higher than the one of $j$. 
+# Finally, let's also introduce the concordance index (C-index). This metric evaluates the ranking (or discriminative) power of a model by comparing pairs of individuals having experienced the event. The C-index of a pair $(i, j)$ is maximized when individual $i$ has experienced the event before $j$ and the estimated risk of $i$ is higher than the one of $j$. 
 #
 # This metric is also comprised between 0 and 1 (higher is better), 0.5 corresponds to a random prediction.
 #
@@ -482,14 +482,16 @@ print(f"IBS of Kaplan-Meier estimator on test set: {km_ibs_test:.3f}")
 from sksurv.metrics import concordance_index_censored
 
 
-def get_c_index(event, duration, survival_probs_matrix):
-    if survival_probs_matrix.ndim != 2:
+def get_c_index(event, duration, survival_curves):
+    if survival_curves.ndim != 2:
         raise ValueError(
             "`survival_probs` must be a 2d array of "
             "shape (n_samples, times)."
         )
+    assert event.shape[0] == duration.shape[0], survival_curves.shape[0]
+
     # Cumulative hazard is also known as risk.
-    cumulative_hazard = survival_to_risk_estimate(survival_probs_matrix)
+    cumulative_hazard = survival_to_risk_estimate(survival_curves)
     metrics = concordance_index_censored(event, duration, cumulative_hazard)
     return metrics[0]
 
@@ -503,10 +505,10 @@ km_c_index_test = get_c_index(y_test["event"], y_test["duration"], y_pred_km_tes
 km_c_index_test
 
 # %% [markdown]
-# This is equivalent to a random prediction. Indeed, as our Kaplan Meier is a descriptive statistics, it can't be used to rank individuals predictions.
+# This is equivalent to a random prediction. Indeed, as our Kaplan Meier is a unconditional estimator: it can't be used to rank individuals predictions as it predicts the same survival curve for any row in `X_test`.
 
 # %% [markdown]
-# Next, we'll study how to add covariates $X$ to our analysis.
+# Next, we'll study how to fit survival models that make predictions that depend on the covariates $X$.
 #
 # ## IV. Predictive survival analysis
 #
@@ -541,20 +543,6 @@ km_c_index_test
 #
 # Let's run it on our truck-driver dataset.
 
-# %%
-duration = df.pop("duration")
-event = df.pop("event")
-y = make_target(event, duration)
-X = df
-
-# %%
-from sklearn.model_selection import train_test_split
-
-
-# %%
-X_train, X_test, y_train, y_test = train_test_split_within(X, y)
-X_train.shape, X_test.shape
-
 # %% [markdown]
 # ***Exercice***
 #
@@ -580,29 +568,23 @@ transformer = make_column_transformer(
 )
 
 # %%
-X_train
-
-# %%
-y_train
-
-# %%
 from sklearn.pipeline import make_pipeline
 from sksurv.linear_model import CoxPHSurvivalAnalysis
 
-cox_ph = make_pipeline(
+cox_ph_pipeline = make_pipeline(
     transformer,
     CoxPHSurvivalAnalysis(alpha=1e-4)
 )
-cox_ph.fit(X_train, y_train)
+cox_ph_pipeline.fit(X_train, as_sksurv_recarray(y_train))
 
 # %%
-step_funcs = cox_ph.predict_survival_function(X_test)
-test_times = make_test_times(y_test["duration"])
+cox_ph_survival_funcs = cox_ph_pipeline.predict_survival_function(X_test)
+test_time_grid = make_test_time_grid(y_test["duration"])
 
 fig, ax = plt.subplots()
-for idx, step_func in enumerate(step_funcs[:5]):
-    survival_probs = step_func(test_times)
-    ax.plot(times, survival_probs, label=idx)
+for idx, cox_ph_survival_func in enumerate(cox_ph_survival_funcs[:5]):
+    survival_probs = cox_ph_survival_func(test_time_grid)
+    ax.plot(test_time_grid, survival_probs, label=idx)
 ax.set(
     title="Survival probabilities $\hat{S(t)}$ of CoxPH",
     xlabel="time (days)",
@@ -611,7 +593,7 @@ ax.set(
 plt.legend();
 
 # %%
-X_test.head().reset_index(drop=True)
+X_test.head(5).reset_index(drop=True)
 
 # %% [markdown]
 # We see that we can get some intuition about the features importance from the first 5 truck-driver pairs and their survival probabilities.
@@ -625,13 +607,27 @@ X_test.head().reset_index(drop=True)
 
 # %%
 ### Your code here
+
+
+
+
 feature_names = []
 weight = []
+
+
+
 ###
 
+# %% [markdown]
+# **Solution**
+
 # %%
-feature_names = cox_ph[0].get_feature_names_out()
-weights = cox_ph[-1].coef_
+feature_names = cox_ph_pipeline[0].get_feature_names_out()
+feature_names.tolist()
+
+# %%
+weights = cox_ph_pipeline[-1].coef_
+weights
 
 # %%
 features = (
@@ -653,25 +649,30 @@ ax.set_title("Cox PH feature importance of $\lambda(t)$");
 from sksurv.metrics import brier_score, integrated_brier_score
 
 
-cox_survival_probs_matrix = np.vstack([step_func(test_times) for step_func in step_funcs])
-
-_, cox_brier_scores = brier_score(
-    survival_train=y_train,
-    survival_test=y_test,
-    estimate=cox_survival_probs_matrix,
-    times=test_times,
+cox_survival_curves = np.vstack(
+    [
+        cox_ph_survival_func(test_time_grid)
+        for cox_ph_survival_func in cox_ph_survival_funcs
+    ]
 )
 
-cox_ibs = integrated_brier_score(
-    survival_train=y_train,
-    survival_test=y_test,
-    estimate=cox_survival_probs_matrix,
-    times=test_times,
+_, cox_ph_brier_scores = brier_score(
+    survival_train=as_sksurv_recarray(y_train),
+    survival_test=as_sksurv_recarray(y_test),
+    estimate=cox_survival_curves,
+    times=test_time_grid,
+)
+
+cox_ph_ibs_test= integrated_brier_score(
+    survival_train=as_sksurv_recarray(y_train),
+    survival_test=as_sksurv_recarray(y_test),
+    estimate=cox_survival_curves,
+    times=test_time_grid,
 )
 
 fig, ax = plt.subplots()
-ax.plot(times, cox_brier_scores, label="CoxPH")
-ax.plot(times, km_brier_scores, label="KaplanMeier")
+ax.plot(test_time_grid, cox_ph_brier_scores, label="Cox PH")
+ax.plot(test_time_grid, km_brier_scores, label="Kaplan Meier")
 ax.set(
     title="Brier Scores of Cox PH",
     xlabel="time (days)",
@@ -679,41 +680,45 @@ ax.set(
 )
 plt.legend();
 
-print(f"CoxPH IBS: {cox_ibs:.4f}")
-print(f"KaplanMeier IBS: {km_ibs:.4f}")
+print(f"Cox PH IBS: {cox_ph_ibs_test:.4f}")
+print(f"Kaplan Meier IBS: {km_ibs_test:.4f}")
 
 # %%
-cox_c_index = get_c_index(
+cox_c_index_test = get_c_index(
     y_test["event"],
     y_test["duration"],
-    cox_survival_probs_matrix,
+    cox_survival_curves,
 )
 
-print(f"Cox PH C-index: {cox_c_index:.4f}")
-print(f"Kaplan Meier C-index: {km_c_index:.4f}")
+print(f"Cox PH C-index: {cox_c_index_test:.3f}")
+print(f"Kaplan Meier C-index: {km_c_index_test:.3f}")
 
 # %% [markdown]
-# We have slightly improved upon the Kaplan Meier.
+# So the Cox Proportional Hazard model from scikit-survival fitted as a simple pipeline with one-hot encoded categorical variables and raw numerical variables seems already significantly better than our unconditional baseline.
 
 # %% [markdown]
 # ### IV.2 Random Survival Forest
+#
+# Random Survival Forests are non-parametric model that is potentially more expressive than Cox PH. In particular, if we expect that the shape of the time varying hazards are not the same for each individual, tree-based models such as RSF might perform better. In general they also require a large enough training set to avoid overfitting.
+#
+# Note however that they are quite computational intensive and their training time can be prohibitive on very large dataset.
 
 # %%
 from sksurv.ensemble import RandomSurvivalForest
 
 rsf = make_pipeline(
     transformer,
-    RandomSurvivalForest(n_estimators=10, max_depth=4, n_jobs=-1),
+    RandomSurvivalForest(n_estimators=10, max_depth=8, n_jobs=-1),
 )
-rsf.fit(X_train, y_train)
+rsf.fit(X_train, as_sksurv_recarray(y_train))
 
 # %%
-step_funcs = rsf.predict_survival_function(X_test)
+rsf_survival_funcs = rsf.predict_survival_function(X_test)
 
 fig, ax = plt.subplots()
-for idx, step_func in enumerate(step_funcs[:5]):
-    survival_probs = step_func(test_times)
-    ax.plot(test_times, survival_probs, label=idx)
+for idx, survival_func in enumerate(rsf_survival_funcs[:5]):
+    survival_curve = survival_func(test_time_grid)
+    ax.plot(test_time_grid, survival_curve, label=idx)
 ax.set(
     title="Survival probabilities $\hat{S}(t)$ of Random Survival Forest",
     xlabel="time (days)",
@@ -721,29 +726,32 @@ ax.set(
 )
 plt.legend();
 
+# %% [markdown]
+# Indeed we observe that the shapes of the curves can vary more than for the Cox-PH model which is more constrained. Let's see if this flexibility makes it a better predictive model on aggregate on the test set:
+
 # %%
-rsf_survival_probs_matrix = np.vstack(
-    [step_func(test_times) for step_func in step_funcs]
+rsf_survival_curves = np.vstack(
+    [func(test_time_grid) for func in rsf_survival_funcs]
 )
 
 _, rsf_brier_scores = brier_score(
-    survival_train=y_train,
-    survival_test=y_test,
-    estimate=rsf_survival_probs_matrix,
-    times=test_times,
+    survival_train=as_sksurv_recarray(y_train),
+    survival_test=as_sksurv_recarray(y_test),
+    estimate=rsf_survival_curves,
+    times=test_time_grid,
 )
 
-rsf_ibs = integrated_brier_score(
-    survival_train=y_train,
-    survival_test=y_test,
-    estimate=rsf_survival_probs_matrix,
-    times=test_times,
+rsf_ibs_test = integrated_brier_score(
+    survival_train=as_sksurv_recarray(y_train),
+    survival_test=as_sksurv_recarray(y_test),
+    estimate=rsf_survival_curves,
+    times=test_time_grid,
 )
 
 fig, ax = plt.subplots()
-ax.plot(test_times, rsf_brier_scores, label="RandomSurvivalForest")
-ax.plot(test_times, cox_brier_scores, label="CoxPH")
-ax.plot(test_times, km_brier_scores, label="KaplanMeier")
+ax.plot(test_time_grid, rsf_brier_scores, label="RandomSurvivalForest")
+ax.plot(test_time_grid, cox_ph_brier_scores, label="CoxPH")
+ax.plot(test_time_grid, km_brier_scores, label="KaplanMeier")
 ax.set(
     title="Brier Scores",
     xlabel="time (days)",
@@ -751,19 +759,22 @@ ax.set(
 )
 plt.legend();
 
-print(f"RandomSurvivalForest IBS: {rsf_ibs:.4f}")
-print(f"CoxPH IBS: {cox_ibs:.4f}")
-print(f"KaplanMeier IBS: {km_ibs:.4f}")
+print(f"RandomSurvivalForest IBS: {rsf_ibs_test:.4f}")
+print(f"CoxPH IBS: {cox_ph_ibs_test:.4f}")
+print(f"KaplanMeier IBS: {km_ibs_test:.4f}")
 
 # %%
-rsf_c_index = get_c_index(y_test["event"], y_test["duration"], rsf_survival_probs_matrix)
+rsf_c_index_test = get_c_index(y_test["event"], y_test["duration"], rsf_survival_curves)
 
-print(f"Random Survival Index C-index: {rsf_c_index:.4f}")
-print(f"Cox PH C-index: {cox_c_index:.4f}")
-print(f"Kaplan Meier C-index: {km_c_index:.4f}")
+print(f"Random Survival Index C-index: {rsf_c_index_test:.4f}")
+print(f"Cox PH C-index: {cox_c_index_test:.4f}")
+print(f"Kaplan Meier C-index: {km_c_index_test:.4f}")
 
 # %% [markdown]
-# ### IV.3 GradientBoostedIBS
+# Unfortunately this does not seem to be able to significantly improve upon the Cox PH model, neither as a ranking model, nor as a well calibrated model.
+
+# %% [markdown]
+# ### IV.3 GradientBoostedCIF
 
 # %%
 import sys; sys.path.append("..")
@@ -773,33 +784,33 @@ from model_selection.wrappers import PipelineWrapper
 
 gb_cif = make_pipeline(
     transformer,
-    GradientBoostedCIF(n_iter=20, learning_rate=0.2),
+    GradientBoostedCIF(n_iter=50, max_depth=4, learning_rate=0.1),
 )
 gb_cif = PipelineWrapper(gb_cif)
-gb_cif.fit(X_train, y_train, times)
+gb_cif.fit(X_train, y_train, test_time_grid)
 
 # %%
-gb_survival_probs_matrix = gb_cif.predict_survival_function(X_test, test_times)
+gbcif_survival_curves = gb_cif.predict_survival_function(X_test, test_time_grid)
 
-_, gb_brier_scores = brier_score(
-    survival_train=y_train,
-    survival_test=y_test,
-    estimate=gb_survival_probs_matrix,
-    times=test_times,
+_, gbcif_brier_scores = brier_score(
+    survival_train=as_sksurv_recarray(y_train),
+    survival_test=as_sksurv_recarray(y_test),
+    estimate=gbcif_survival_curves,
+    times=test_time_grid,
 )
 
-gb_ibs = integrated_brier_score(
-    survival_train=y_train,
-    survival_test=y_test,
-    estimate=gb_survival_probs_matrix,
-    times=test_times,
+gbcif_ibs_test = integrated_brier_score(
+    survival_train=as_sksurv_recarray(y_train),
+    survival_test=as_sksurv_recarray(y_test),
+    estimate=gbcif_survival_curves,
+    times=test_time_grid,
 )
 
 fig, ax = plt.subplots()
-ax.plot(test_times, gb_brier_scores, label="GradientBoostedCIF")
-ax.plot(test_times, rsf_brier_scores, label="RandomSurvivalForest")
-ax.plot(test_times, cox_brier_scores, label="CoxPH")
-ax.plot(test_times, km_brier_scores, label="KaplanMeier")
+ax.plot(test_time_grid, gbcif_brier_scores, label="GradientBoostedCIF")
+ax.plot(test_time_grid, rsf_brier_scores, label="RandomSurvivalForest")
+ax.plot(test_time_grid, cox_ph_brier_scores, label="CoxPH")
+ax.plot(test_time_grid, km_brier_scores, label="KaplanMeier")
 ax.set(
     title="Brier Scores",
     xlabel="time (days)",
@@ -807,21 +818,26 @@ ax.set(
 )
 plt.legend();
 
-print(f"GradientBoostedCIF IBS: {gb_ibs:.4f}")
-print(f"RandomSurvivalForest IBS: {rsf_ibs:.4f}")
-print(f"CoxPH IBS: {cox_ibs:.4f}")
-print(f"KaplanMeier IBS: {km_ibs:.4f}")
+print(f"GradientBoostedCIF IBS: {gbcif_ibs_test:.4f}")
+print(f"RandomSurvivalForest IBS: {rsf_ibs_test:.4f}")
+print(f"Cox PH IBS: {cox_ph_ibs_test:.4f}")
+print(f"Kaplan Meier IBS: {km_ibs_test:.4f}")
 
 # %%
-gb_c_index = get_c_index(y_test["event"], y_test["duration"], gb_survival_probs_matrix)
+gbcif_c_index_test = get_c_index(y_test["event"], y_test["duration"], gbcif_survival_curves)
 
-print(f"GradientBoostedCIF C-index: {gb_c_index:.4f}")
-print(f"Random Survival Index C-index: {rsf_c_index:.4f}")
-print(f"Cox PH C-index: {cox_c_index:.4f}")
-print(f"Kaplan Meier C-index: {km_c_index:.4f}")
+print(f"GradientBoostedCIF C-index: {gbcif_c_index_test:.4f}")
+print(f"Random Survival Index C-index: {rsf_c_index_test:.4f}")
+print(f"Cox PH C-index: {cox_c_index_test:.4f}")
+print(f"Kaplan Meier C-index: {km_c_index_test:.4f}")
 
 # %% [markdown]
-# ## V. Competing risks modeling with Aalen-Johanson
+# Other survival models:
+#
+# TODO: mention and link to XGBSE, DeepHit, SurvTrace...
+
+# %% [markdown]
+# ## V. Unconditional competing risks modeling with Aalen-Johanson
 #
 # So far, we've been dealing with a single kind of risk: any accident. What if we have different types of accident? This is the point of competing risks modeling. It aims at modeling the probability of incidence for different events, where these probabilities interfer with each other. A truck that had an accident is withdrawn from the fleet, and therefore can't experienced any other ones.
 #
@@ -857,8 +873,8 @@ print(f"Kaplan Meier C-index: {km_c_index:.4f}")
 # Let's load our dataset another time. Notice that we have 3 types of event (plus the censoring 0). In the previous section, we only considered binary "any events" by applying `event > 0` to our event column.
 
 # %%
-df = pd.read_parquet("data_truck.parquet")
-df
+truck_failure_competing_events = pd.read_parquet("truck_failure_10k_competing_risks.parquet")
+truck_failure_competing_events
 
 # %% [markdown]
 # Let's use lifelines to estimate the ${CIF_k}$ using Aalen-Johanson. We need to indicate which event to fit on, so we'll iteratively fit the model on all events.
@@ -866,24 +882,34 @@ df
 # %%
 from lifelines import AalenJohansenFitter
 
-total_cif = np.zeros(df.shape[0])
-
 fig, ax = plt.subplots()
-for event in [1, 2, 3]:
+
+total_cif = None
+competing_risk_ids = sorted(
+    truck_failure_competing_events.query("event > 0")["event"].unique()
+)
+for event in competing_risk_ids:
+    print(f"Fitting for event {event}...")
     ajf = AalenJohansenFitter(calculate_variance=True)
-    ajf.fit(df["duration"], df["event"], event_of_interest=event)
+    ajf.fit(
+        truck_failure_competing_events["duration"],
+        truck_failure_competing_events["event"],
+        event_of_interest=event
+    )
     ajf.plot(ax=ax, label=f"event {event}")
     cif_df = ajf.cumulative_density_
     cif_times = cif_df.index
-    total_cif += cif_df[cif_df.columns[0]].values
+    if total_cif is None:
+        total_cif = cif_df[cif_df.columns[0]].values
+    else:
+        total_cif += cif_df[cif_df.columns[0]].values
 
 ax.plot(cif_times, total_cif, label="total", linestyle="--", color="black")
 ax.set(title="CIFs from Aalen Johansen", xlabel="time (days)")
 plt.legend();
 
-
 # %% [markdown]
-# This non-conditional model helps us identify 3 types of events, having momentum at different times.
+# This un-conditional model helps us identify 3 types of events, having momentum at different times.
 
 # %% [markdown]
 # ## VI. Cumulative incidence function (CIF) using our GradientBoostedCIF
@@ -891,41 +917,29 @@ plt.legend();
 # We can now try to estimate the conditional cumulative incidence function using our GradientBoostedCIF.
 
 # %%
-def get_X_y(df):
-    y = np.empty(
-        df.shape[0],
-        dtype=[("event", np.int8), ("duration", float)],
-    )
-    y["event"] = df.pop("event")
-    y["duration"] = df.pop("duration")
-    return df, y
+y_cr = truck_failure_competing_events
+X_train, X_test, y_cr_train, y_cr_test = train_test_split_within(X, y_cr, random_state=0)
 
-
-# %%
-df = pd.read_parquet("data_truck.parquet")
-X, y = get_X_y(df)
-X_train, X_test, y_train, y_test = train_test_split_within(X, y)
-
-test_times = make_test_times(y_test["duration"])
-
-total_mean_cif = np.zeros(times.shape[0])
+test_time_grid = make_test_time_grid(y_test["duration"])
+total_mean_cif = np.zeros(test_time_grid.shape[0])
 
 fig, ax = plt.subplots()
-for event in [1, 2, 3]:    
+for event in competing_risk_ids:    
     gb_cif = make_pipeline(
         transformer,
-        GradientBoostedCIF(event, n_iter=20, learning_rate=0.2),
+        GradientBoostedCIF(event, max_depth=4, n_iter=50, learning_rate=0.1),
     )
     gb_cif = PipelineWrapper(gb_cif)
     
-    gb_cif.fit(X_train, y_train, times)
-    cif_matrix_k = gb_cif.predict_cumulative_incidence(X_test, test_times)
+    gb_cif.fit(X_train, y_cr_train, times)
+    cif_matrix_k = gb_cif.predict_cumulative_incidence(X_test, test_time_grid)
     
     mean_cif_k = cif_matrix_k.mean(axis=0)
     total_mean_cif += mean_cif_k
-    ax.plot(times, mean_cif_k, label=f"event {event}")
+    ax.plot(test_time_grid, mean_cif_k, label=f"event {event}")
 
-ax.plot(times, total_mean_cif, label="total", linestyle="--", color="black")
+ax.plot(test_time_grid, total_mean_cif, label="total", linestyle="--", color="black")
+ax.set(xlabel="time in days", ylabel="Cumulative Incidence")
 plt.legend();
 
 # %% [markdown]
