@@ -159,22 +159,8 @@ def sample_driver_truck_pairs_with_metadata(n_datapoints, random_seed):
 
 sample_driver_truck_pairs_with_metadata(10, random_seed=0)
 
-# +
-ux_levels = 
-labels = [f"Model {idx}" for idx in range(1, len(ux_levels)+1)]
-ux_models = dict(zip(ux_levels, labels))
 
-fig, ax = plt.subplots()
-palette = sns.color_palette("rocket", n_colors=5)
-ax.bar(labels, height=ux_levels, color=palette);
-plt.title("Relative UX by model");
 # -
-
-ux = rng.choice(ux_levels, size=N)
-df["model_id"] = pd.Series(ux).map(ux_models)
-df["ux"] = ux
-df.head()
-
 
 # ## Types of Failures
 #
