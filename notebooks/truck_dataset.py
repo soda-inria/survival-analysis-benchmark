@@ -573,12 +573,11 @@ plot_survival_function(truck_data, all_hazards)
 # Where $f(t)$ is the probability density, $CIF_k(t)$ is the cumulative incidence function, $\lambda_k(t)$ is the hazard rate of event $k$ and $S(t)$ is the survival probability.
 
 # +
-from scipy.interpolate import interp1d
 from lifelines import AalenJohansenFitter
 
 
 def plot_cumulative_incidence_functions(event_frame, all_hazards):
-    fig, axes = plt.subplots(figsize=(6, 9), nrows=3, ncols=1)
+    fig, axes = plt.subplots(figsize=(12, 4), ncols=all_hazards.shape[0])
 
     any_event_hazards = all_hazards.sum(axis=0)
     true_surv = np.exp(-any_event_hazards.cumsum(axis=-1))
@@ -590,7 +589,7 @@ def plot_cumulative_incidence_functions(event_frame, all_hazards):
         ajf.plot(label=f"Aalen Johansen estimate of $CIF_{event_id}$", ax=ax)
 
         cif = (hazards_i * true_surv).cumsum(axis=-1).mean(axis=0)
-        ax.plot(cif, label="True $E_{x_i \in X}" + f"[CIF_{event_id}](t; x_i)$"),
+        ax.plot(cif, label="True $E_{x_i \in X}" + f"[CIF_{event_id}(t; x_i)]$"),
         ax.set(ylim=[-.01, 1.01]),
         ax.legend()
         
