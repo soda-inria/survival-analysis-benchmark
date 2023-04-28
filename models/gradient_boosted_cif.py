@@ -38,7 +38,10 @@ class IBSTrainingSampler:
             min_times, max_times = y["duration"].min(), y["duration"].max()
             times = rng.uniform(min_times, max_times, y.shape[0])
         else:
-            raise ValueError(f"Sampling strategy must be 'inverse_km' or 'uniform', got {self.sampling_strategy}")
+            raise ValueError(
+                f"Sampling strategy must be 'inverse_km' or 'uniform', "
+                f"got {self.sampling_strategy}"
+            )
         
         k = self.event_of_interest
         mask_y_k = (y["event"] == k) & (y["duration"] <= times)
@@ -115,7 +118,8 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
         n_iter=10,
         n_repetitions_per_iter=5,
         learning_rate=0.1,
-        max_depth=7,
+        max_depth=None,
+        max_leaf_nodes=31,
         min_samples_leaf=50,
         verbose=False,
         show_progressbar=True,
@@ -128,6 +132,7 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
         self.n_repetitions_per_iter = n_repetitions_per_iter # TODO? data augmenting for early iterations
         self.learning_rate = learning_rate
         self.max_depth = max_depth
+        self.max_leaf_nodes = max_leaf_nodes
         self.min_samples_leaf = min_samples_leaf
         self.verbose = verbose
         self.show_progressbar = show_progressbar
@@ -161,11 +166,13 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
                 train_ibs = self.compute_ibs(y, X_val=X)
                 msg_ibs = f"round {idx_iter+1:03d} -- train ibs: {train_ibs:.6f}"
                 
-                if validation_data is not None:
-                    X_val, y_val = validation_data
-                    val_ibs = self.compute_ibs(y, X_val, y_val)
+            if validation_data is not None:
+                X_val, y_val = validation_data
+                val_ibs = self.compute_ibs(y, X_val, y_val)
+                if self.verbose:
                     msg_ibs += f" -- val ibs: {val_ibs:.6f}"
-                
+    
+            if self.verbose:
                 print(msg_ibs)
         
         return self
@@ -221,6 +228,7 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
                 monotonic_cst=monotonic_cst,
                 learning_rate=self.learning_rate,
                 max_depth=self.max_depth,
+                max_leaf_nodes=self.max_leaf_nodes,
                 min_samples_leaf=self.min_samples_leaf,
             )
         elif self.objective == "inll":
@@ -230,6 +238,7 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
                 warm_start=True,
                 monotonic_cst=monotonic_cst,
                 learning_rate=self.learning_rate,
+                max_leaf_nodes=self.max_leaf_nodes,
                 max_depth=self.max_depth,
                 min_samples_leaf=self.min_samples_leaf,
             )
