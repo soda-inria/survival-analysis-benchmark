@@ -41,6 +41,9 @@
 # Instead, the observer has only access to the **brand** of the truck and its **model**. They also know the **usage rate** because it is linked to the driver planning, and they have access to the **training level** of each drivers.
 
 # <img src="variables.png" width="60%">
+#
+#
+# **TODO** update this diagram to add driver skill and usage rate.
 
 # So, in summary:
 
@@ -409,7 +412,6 @@ def first_event(event_frames, event_ids, random_seed=None):
 competing_events = first_event(
     [occurrences_1, occurrences_2, occurrences_3], event_ids=[1, 2, 3]
 )
-competing_events["event"].value_counts().sort_index().plot.bar(rot=0);
 
 
 # +
@@ -419,14 +421,16 @@ def plot_stacked_occurrences(occurrences):
         for idx in range(4)
     ]
     labels = [f"$e_{idx}$" for idx in range(4)]
-    fig, ax = plt.subplots()
-    ax.hist(hists, bins=50, stacked=True, label=labels);
-    ax.set(
+    fig, axes = plt.subplots(ncols=2, figsize=(12, 4))
+    axes[0].hist(hists, bins=50, stacked=True, label=labels);
+    axes[0].set(
         xlabel="duration (days)",
         ylabel="occurrence count",
         title="Stacked combined duration distributions",
     )
-    plt.legend();
+    axes[0].legend()
+    occurrences["event"].value_counts().sort_index().plot.bar(rot=0, ax=axes[1])
+    axes[1].set(title="Event counts by type (0 == censored)")
 
 
 plot_stacked_occurrences(competing_events)
@@ -457,10 +461,8 @@ def uniform_censoring(occurrences, censoring_weight=0.5, offset=0, random_state=
 
 
 censored_events = uniform_censoring(competing_events, random_state=0)
-censored_events["event"].value_counts().sort_index().plot.bar(rot=0);
-# -
-
 plot_stacked_occurrences(censored_events)
+# -
 
 # Let's put it all data generation steps together.
 
@@ -520,7 +522,6 @@ def generate_competing_risk_truck_data(
     )
 
 truck_data, all_hazards = generate_competing_risk_truck_data(10_000, random_seed=0)
-truck_data["event"].value_counts().sort_index().plot.bar(rot=0);
 plot_stacked_occurrences(truck_data)
 # -
 
@@ -622,7 +623,6 @@ array_names
 df_fixed_condition, hazards_fixed_condition = generate_competing_risk_truck_data(
     300, fixed_condition=True, uniform_censoring_weight=1.0, random_seed=3
 )
-df_fixed_condition["event"].value_counts().sort_index().plot.bar(rot=0)
 plot_stacked_occurrences(df_fixed_condition)
 
 plot_survival_function(df_fixed_condition, hazards_fixed_condition)
