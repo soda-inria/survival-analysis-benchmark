@@ -359,7 +359,7 @@ def sample_events_by_type(hazards, random_state=None):
     # ex: trials = [[0, 0, 1, 0, 1]] -> duration = 2
     _, first_occurrence_idxs = np.unique(occurrence_rows, return_index=True)
     duration[any_event_mask] = occurrence_cols[first_occurrence_idxs]
-    jitter = rng.rand(duration.shape[0]) - 0.5
+    jitter = rng.rand(duration.shape[0])
     return pd.DataFrame(dict(event=any_event_mask, duration=duration + jitter))
 
 
@@ -462,36 +462,16 @@ def uniform_censoring(occurrences, censoring_weight=0.5, offset=0, random_state=
 
 censored_events = uniform_censoring(competing_events, random_state=0)
 plot_stacked_occurrences(censored_events)
+
+
 # -
 
 # Let's put it all data generation steps together.
 
 # +
-observed_variables = [
-    "driver_skill",
-    "brand",
-    "truck_model",
-    "usage_rate",
-]
-
-
-def generate_competing_risk_truck_data(
-    n_observations,
-    fixed_condition=False,
-    uniform_censoring_weight=0.5,
-    random_seed=0
-):
+def sample_competing_events(data, uniform_censoring_weight=1.0, random_seed=None):
     rng = check_random_state(random_seed)
     t = np.linspace(0, total_days, total_days)
-    if fixed_condition:
-        df = sample_driver_truck_pairs_with_metadata(
-            1, random_seed=random_seed
-        )
-        df = pd.concat([df] * n_observations, axis="rows").reset_index(drop=True)
-    else:
-        df = sample_driver_truck_pairs_with_metadata(
-            n_datapoints, random_seed=random_seed
-        )
     hazard_funcs = [
         assembly_hazards,
         operational_hazards,
@@ -499,7 +479,7 @@ def generate_competing_risk_truck_data(
     ]
     event_ids = np.arange(len(hazard_funcs)) + 1
     all_hazards = np.asarray([
-        hazard_func(df, t) for hazard_func in hazard_funcs
+        hazard_func(data, t) for hazard_func in hazard_funcs
     ])
     occurrences_by_type = [
         sample_events_by_type(all_hazards[i], random_state=rng)
@@ -510,22 +490,22 @@ def generate_competing_risk_truck_data(
         occurrences, censoring_weight=uniform_censoring_weight, random_state=rng
     )
     return (
-        pd.concat(
-            [
-                df[observed_variables],
-                censored_occurrences,
-                occurrences.add_suffix("_uncensored"),
-            ],
-            axis="columns",
-        ),
+        censored_occurrences,
+        occurrences,
         all_hazards  # shape = (n_event_types, n_observations, n_timesteps)
     )
 
-truck_data, all_hazards = generate_competing_risk_truck_data(10_000, random_seed=0)
-plot_stacked_occurrences(truck_data)
+
+truck_failure_10k = sample_driver_truck_pairs_with_metadata(10_000, random_seed=0)
+(
+    truck_failure_10k_events,
+    truck_failure_10k_events_uncensored,
+    truck_failure_10k_all_hazards,
+) = sample_competing_events(truck_failure_10k, random_seed=0)
+plot_stacked_occurrences(truck_failure_10k_events)
 # -
 
-truck_data
+truck_failure_10k
 
 # Let's check that the Kaplan-Meier estimator can estimate the mean "any event" survival function. We compare this estimate to the theoretical mean survival function computed from the conditional hazard functions from which the event data has been sampled:
 
@@ -563,7 +543,7 @@ def plot_survival_function(event_frame, all_hazards):
     plt.title("Survival functions")
     
     
-plot_survival_function(truck_data, all_hazards)
+plot_survival_function(truck_failure_10k_events, truck_failure_10k_all_hazards)
 # -
 
 # The Aalan-Johansen estimator allows us to compute the cumulative incidence function $P(T < t)$ for competitive events.
@@ -595,39 +575,87 @@ def plot_cumulative_incidence_functions(event_frame, all_hazards):
         ax.legend()
         
 
-plot_cumulative_incidence_functions(truck_data, all_hazards)
+plot_cumulative_incidence_functions(truck_failure_10k_events, truck_failure_10k_all_hazards)
 # -
 
 # If all is well, let's save this dataset to disk:
 
-truck_data.to_parquet("data_truck.parquet", index=False)
+# +
+observed_variables = [
+    "driver_skill",
+    "brand",
+    "truck_model",
+    "usage_rate",
+]
+truck_failure_10k[observed_variables].to_parquet("truck_failure_10k_features.parquet", index=False)
+truck_failure_10k_events.to_parquet("truck_failure_10k_competing_risks.parquet", index=False)
+truck_failure_10k_events_uncensored.to_parquet("truck_failure_10k_competing_risks_uncensored.parquet", index=False)
+
+truck_failure_10k_any_event = truck_failure_10k_events.copy()
+truck_failure_10k_any_event["event"] = truck_failure_10k_any_event["event"] > 0
+truck_failure_10k_any_event.to_parquet("truck_failure_10k_any_event.parquet", index=False)
+
+truck_failure_10k_any_event_uncensored = truck_failure_10k_events_uncensored.copy()
+truck_failure_10k_any_event_uncensored["event"] = truck_failure_10k_any_event["event"] > 0
+truck_failure_10k_any_event_uncensored.to_parquet("truck_failure_10k_any_event_uncensored.parquet", index=False)
+# -
 
 # Let's also save the underlying hazard functions used to sample each event of the dataset.
 
 np.savez_compressed(
-    "data_truck_hazards.npz",
-    all_hazards=all_hazards,
+    "truck_failure_10k_hazards.npz",
+    truck_failure_10k_hazards=truck_failure_10k_all_hazards,
 )
 
 # +
-with np.load("data_truck_hazards.npz") as hazards_file:
+with np.load("truck_failure_10k_hazards.npz") as hazards_file:
     array_names = list(hazards_file.keys())
 
 array_names
 # -
 
+# ## Sampling a larger dataset (without ground truth)
+#
+# Let's sample a larger event dataset to be able to assess the sample and computational complexities of various predictive methods:
+
+# +
+truck_failure_100k = sample_driver_truck_pairs_with_metadata(100_000, random_seed=0)
+chunk_size = 1000
+n_chunks, remainder = divmod(truck_failure_100k.shape[0], chunk_size)
+assert remainder == 0
+
+all_event_chunks = []
+for chunk_idx in range(n_chunks):
+    start, stop = chunk_idx * chunk_size, (chunk_idx + 1) * chunk_size
+    features_chunk = truck_failure_100k.iloc[start:stop]
+    event_chunk, _, _ = sample_competing_events(features_chunk, random_seed=chunk_idx)
+    all_event_chunks.append(event_chunk)
+    
+truck_failure_100k_events = pd.concat(all_event_chunks, axis="rows")
+plot_stacked_occurrences(truck_failure_100k_events)
+# -
+
+truck_failure_100k[observed_variables].to_parquet("truck_failure_100k_features.parquet", index=False)
+truck_failure_100k_events.to_parquet("truck_failure_100k_competing_risks.parquet", index=False)
+
 # ## Sampling targets at fixed conditional X
 #
 # We now fix our covariates X to the first truck-driver pair, and create a fixed dataset by sampling $N$ times our first user multi-event hazards. The goal is to check that an unconditional estimator designed for competing events, called Aalen-Johanson, gives hazards estimations close to the ground truth.
 
-df_fixed_condition, hazards_fixed_condition = generate_competing_risk_truck_data(
-    300, fixed_condition=True, uniform_censoring_weight=1.0, random_seed=3
-)
-plot_stacked_occurrences(df_fixed_condition)
+truck_failure_fc = sample_driver_truck_pairs_with_metadata(1, random_seed=3)
+truck_failure_fc = pd.concat([truck_failure_fc] * 300, axis="rows").reset_index(drop=True)
+truck_failure_fc
 
-plot_survival_function(df_fixed_condition, hazards_fixed_condition)
-plot_cumulative_incidence_functions(df_fixed_condition, hazards_fixed_condition)
+(
+    truck_failure_fc_events,
+    truck_failure_fc_events_uncensored,
+    all_hazards_fc,
+) = sample_competing_events(truck_failure_fc, random_seed=42)
+plot_stacked_occurrences(truck_failure_fc_events)
 
-df_fixed_condition
+plot_survival_function(truck_failure_fc_events, all_hazards_fc)
+plot_cumulative_incidence_functions(truck_failure_fc_events, all_hazards_fc)
 
-# We should see that the Aalen-Johansen method provides an accurate estimators for the unconditional competing hazards!
+# We should see that the Aalen-Johansen method provides an accurate estimators for the unconditional competing hazards, even with few samples!
+
+
