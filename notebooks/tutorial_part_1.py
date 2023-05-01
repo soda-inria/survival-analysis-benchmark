@@ -224,8 +224,7 @@ get_median_survival_probs(times, survival_probs)
 ### Solution
 
 def get_median_survival_probs(times, survival_probs):
-    """Get the closest time to a survival proba of 50%.
-    """
+    """Get the closest time to a survival proba of 50%."""
     # Search sorted needs an ascending ordered array.
     sorted_survival_probs = survival_probs[::-1]
     median_idx = np.searchsorted(sorted_survival_probs, 0.50)
@@ -345,19 +344,22 @@ plot_brands_km(truck_failure_features_and_events)
 from sklearn.model_selection import train_test_split
 
 
-def train_test_split_within(X, y, **kwargs):
+def train_test_split_within(X, y, idx, **kwargs):
     """Ensure that test data durations are within train data durations."""
-    X_train, X_test, y_train, y_test = train_test_split(X, y, **kwargs)
+    X_train, X_test, y_train, y_test, idx_train, idx_test = train_test_split(X, y, idx, **kwargs)
     mask_duration_inliers = y_test["duration"] < y_train["duration"].max()
-    y_test = y_test[mask_duration_inliers]
     X_test = X_test[mask_duration_inliers]
-    return X_train, X_test, y_train, y_test
+    y_test = y_test[mask_duration_inliers]
+    idx_test = idx_test[mask_duration_inliers]
+    return X_train, X_test, y_train, y_test, idx_train, idx_test
 
 
 X = truck_failure_features
 y = truck_failure_events
 
-X_train, X_test, y_train, y_test = train_test_split_within(X, y, test_size=0.5, random_state=0)
+X_train, X_test, y_train, y_test, idx_train, idx_test = train_test_split_within(
+    X, y, np.arange(X.shape[0]), test_size=0.5, random_state=0
+)
 
 # %%
 from scipy.interpolate import interp1d
@@ -518,55 +520,58 @@ km_c_index_test
 class SurvivalAnalysisEvaluator:
     
     def __init__(self, y_train, y_test, time_grid):
-        self.survival_curves = {}
-        self.brier_scores = {}
-        self.metrics = []
+        self.model_data = {}
         self.y_train = as_sksurv_recarray(y_train)
         self.y_test = as_sksurv_recarray(y_test)
         self.time_grid = time_grid
         
     def add_model(self, model_name, survival_curves):
-        self.survival_curves[model_name] = survival_curves
-
         _, brier_scores = brier_score(
             survival_train=self.y_train,
             survival_test=self.y_test,
             estimate=survival_curves,
             times=self.time_grid,
         )
-
         ibs = integrated_brier_score(
             survival_train=self.y_train,
             survival_test=self.y_test,
             estimate=survival_curves,
             times=self.time_grid,
         )
-        self.brier_scores[model_name] = (brier_scores, ibs)
-        
         c_index = compute_c_index(
             self.y_test["event"],
             self.y_test["duration"],
             survival_curves,
         )
-        self.metrics.append({
-            "Model": model_name,
-            "IBS": ibs,
-            "C-index": c_index,
-        })
+        self.model_data[model_name] = {
+            "brier_scores": brier_scores,
+            "ibs": ibs,
+            "c_index": c_index,
+        }
 
     def metrics_table(self):
-        return pd.DataFrame(self.metrics)
+        return pd.DataFrame([
+            {
+                "Model": model_name,
+                "IBS": info["ibs"],
+                "C-index": info["c_index"],
+            }
+            for model_name, info in self.model_data.items()
+        ])
         
     def plot(self, model_names=None):
         if model_names is None:
-            model_names = list(self.brier_scores.keys())
-        fig, ax = plt.subplots(figsize=(12, 3))
+            model_names = list(self.model_data.keys())
+        fig, ax = plt.subplots(figsize=(12, 5))
         self._plot_brier_scores(model_names, ax=ax)
 
     def _plot_brier_scores(self, model_names, ax):
         for model_name in model_names:
-            brier_scores, ibs = self.brier_scores[model_name]
-            ax.plot(self.time_grid, brier_scores, label=f"{model_name}, IBS:{ibs:.3f}");
+            info = self.model_data[model_name]
+            ax.plot(
+                self.time_grid,
+                info["brier_scores"],
+                label=f"{model_name}, IBS:{info['ibs']:.3f}");
         ax.set(
             title="Time-varying Brier score (lower is better)",
             xlabel="time (days)",
@@ -608,7 +613,7 @@ evaluator.metrics_table()
 # %% [markdown]
 # ### IV.1 Cox Proportional Hazards
 #
-# The Cox PH model is the canonical way of dealing with covariates $X$ in survival analysis. It computes a log linear regression on the target $Y = \min(T, C)$, and consists in a baseline term $\lambda_0(t)$ and a covariate term with weights $\beta$.
+# The Cox PH model is the most popular way of dealing with covariates $X$ in survival analysis. It computes a log linear regression on the target $Y = \min(T, C)$, and consists in a baseline term $\lambda_0(t)$ and a covariate term with weights $\beta$.
 # $$\lambda(t, x_i) = \lambda_0(t) \exp(x_i^\top \beta)$$
 #
 # Note that only the baseline depends on the time $t$, but we can extend Cox PH to time-dependent covariate $x_i(t)$ and time-dependent weigths $\beta(t)$. We won't cover these extensions in this tutorial.
@@ -618,41 +623,26 @@ evaluator.metrics_table()
 #
 # This ratio is not dependent on time, and therefore the hazards are proportional.
 #
-# Let's run it on our truck-driver dataset.
-
-# %% [markdown]
-# ***Exercice***
-#
-# Create a `ColumnTransformer` to encode categories `brand` and `truck_model`.
-#
-# *Hint*: Use `sklearn.preprocessing.OneHotEncoder` and `sklearn.compose.make_column_transformer`.
+# Let's run it on our truck-driver dataset using the implementation of `sksurv`. This models requires preprocessing of the categorical features using One-Hot encoding. Let's use the scikit-learn column-transformer to combine the various components of the model as a pipeline:
 
 # %%
+from sklearn.pipeline import make_pipeline
 from sklearn.compose import make_column_transformer
 from sklearn.preprocessing import OneHotEncoder
-
-### Your code here
-transformer = None
-###
-
-# %%
-from sklearn.compose import make_column_transformer
-from sklearn.preprocessing import OneHotEncoder
+from sksurv.linear_model import CoxPHSurvivalAnalysis
 
 transformer = make_column_transformer(
     (OneHotEncoder(), ["brand", "truck_model"]),
     remainder="passthrough",
 )
-
-# %%
-from sklearn.pipeline import make_pipeline
-from sksurv.linear_model import CoxPHSurvivalAnalysis
-
 cox_ph_pipeline = make_pipeline(
     transformer,
     CoxPHSurvivalAnalysis(alpha=1e-4)
 )
 cox_ph_pipeline.fit(X_train, as_sksurv_recarray(y_train))
+
+# %% [markdown]
+# Let's compute the predicted survival functions for each row of the test set `X_test` and plot the first 5 survival functions:
 
 # %%
 cox_ph_survival_funcs = cox_ph_pipeline.predict_survival_function(X_test)
@@ -672,7 +662,9 @@ plt.legend();
 X_test.head(5).reset_index(drop=True)
 
 # %% [markdown]
-# We see that we can get some intuition about the features importance from the first 5 truck-driver pairs and their survival probabilities.
+# We see that predicted survival functions can vary significantly for different test samples.
+#
+# Let's try to get some intuition about the features importance from the first 5 truck-driver pairs and their survival probabilities.
 
 # %% [markdown]
 # ***Exercice***
@@ -680,6 +672,15 @@ X_test.head(5).reset_index(drop=True)
 # Plot the feature importance $\beta$ of the model (stored under `_coef`) with their names from the `get_feature_names_out()` method of the transformer.
 #
 # *Hint*: You can access an element of a pipeline as simply as `pipeline[idx]`.
+
+# %%
+cox_ph_pipeline
+
+# %%
+cox_ph_pipeline[0]
+
+# %%
+cox_ph_pipeline[1]
 
 # %%
 ### Your code here
@@ -722,9 +723,6 @@ ax.set_title("Cox PH feature importance of $\lambda(t)$");
 # Finally, we compute the Brier score for our model.
 
 # %%
-from sksurv.metrics import brier_score, integrated_brier_score
-
-
 cox_survival_curves = np.vstack(
     [
         cox_ph_survival_func(time_grid)
@@ -736,6 +734,73 @@ evaluator("Cox PH", cox_survival_curves)
 
 # %% [markdown]
 # So the Cox Proportional Hazard model from scikit-survival fitted as a simple pipeline with one-hot encoded categorical variables and raw numerical variables seems already significantly better than our unconditional baseline.
+
+# %% [markdown]
+# **Exercise**
+#
+# Let's define a more expressive polynomial feature engineering pipeline for a Cox PH model that:
+#
+# - encodes categorical variables using the `OneHotEncoder` as previously;
+# - transforms numerical features with `SplineTransformer()` (using the default parameters);
+# - transforms the resulting of the encoded categorical variables and spline-transformed numerical variables using a degree 2 polynomial kernel approximation using the Nystroem method (e.g. `Nystroem(kernel="poly", degree=2, n_components=300)`)
+
+# %%
+X.columns
+
+# %%
+from sklearn.preprocessing import SplineTransformer
+from sklearn.kernel_approximation import Nystroem
+
+# TODO: write your pipeline here.
+
+
+# step 1: define a column transformer to:
+# - one-hot encode categorical columns
+# - spline-transform numerical features
+
+# step 2: define a Nystroem approximate degree 2 polynomial feature expansion
+
+# step 3: assemble everything in a pipeline with a CoxPHSurvivalAnalysis
+# model at the end.
+
+# step 4: fit the pipeline on the training set.
+
+# step 5: predict the survival functions for each row of the test set.
+
+# step 6: compute the values of the survival function on the usual `time_grid`
+# and store the result in an array named `poly_cox_ph_survival_curves`.
+
+# Uncomment the following to evaluate your pipeline:
+
+# evaluator("Polynomial Cox PH", poly_cox_ph_survival_curves)
+
+# %%
+### Solution:
+
+from sklearn.preprocessing import SplineTransformer
+from sklearn.kernel_approximation import Nystroem
+
+
+transformer = make_column_transformer(
+    (OneHotEncoder(), ["brand", "truck_model"]),
+    (SplineTransformer(), ["driver_skill", "usage_rate"]),
+)
+poly_cox_ph_pipeline = make_pipeline(
+    transformer,
+    Nystroem(kernel="poly", degree=2, n_components=300),
+    CoxPHSurvivalAnalysis(alpha=1e-4)
+)
+poly_cox_ph_pipeline.fit(X_train, as_sksurv_recarray(y_train))
+poly_cox_ph_survival_funcs = poly_cox_ph_pipeline.predict_survival_function(X_test)
+
+
+poly_cox_ph_survival_curves = np.vstack(
+    [
+        poly_cox_ph_survival_func(time_grid)
+        for poly_cox_ph_survival_func in poly_cox_ph_survival_funcs
+    ]
+)
+evaluator("Polynomial Cox PH", poly_cox_ph_survival_curves)
 
 # %% [markdown]
 # ### IV.2 Random Survival Forest
@@ -798,6 +863,67 @@ gb_cif.fit(X_train, y_train, time_grid)
 # %%
 gbcif_survival_curves = gb_cif.predict_survival_function(X_test, time_grid)
 evaluator("Gradient Boosting CIF", gbcif_survival_curves)
+
+# %% [markdown]
+# This model is often better than Random Survival Forest but significantly faster to train and requires few feature engineering than a Cox PH model.
+
+# %% [markdown]
+# ### IV.4 Comparing our models to the optimal survival curves
+#
+# Since the dataset is synthetic, we can access the underlying hazard function for each row of `X_test`:
+
+# %%
+with np.load("truck_failure_10k_hazards.npz") as f:
+    all_theoretical_hazards = f["truck_failure_10k_hazards"]
+all_theoretical_hazards.shape
+
+# %% [markdown]
+# The first axis correspond to the 3 types of failures of this dataset (that will be covered in the next section). For now let's collapse them all together an consider the "any event" hazard functions:
+
+# %%
+any_event_hazards = all_theoretical_hazards.sum(axis=0)
+any_event_hazards.shape
+
+# %% [markdown]
+# We can then extra the test records:
+
+# %%
+any_event_hazards_test = any_event_hazards[idx_test]
+any_event_hazards_test.shape
+
+# %% [markdown]
+# and finally, do a numerical integration over the last dimension (using `cumsum(axis=-1)`) and take the exponential of the negative cumulated hazards to recover the theoretical survival curves for each sample of the test set:
+
+# %%
+theoretical_survival_curves = np.exp(-any_event_hazards_test.cumsum(axis=-1))
+theoretical_survival_curves.shape
+
+# %% [markdown]
+# Finally, we can evaluate the performance metrics (IBS and C-index) of the theoretical curves on the same test events and `time_grid` to be able to see how far our best predictive survival analysis models are from the optimal model:
+
+# %%
+n_total_days = any_event_hazards.shape[-1]
+original_time_range = np.linspace(0, n_total_days, n_total_days)
+
+theoretical_survival_curves = np.asarray([
+    interp1d(
+        original_time_range,
+        surv_curve,
+        kind="previous",
+        bounds_error=False,
+        fill_value="extrapolate",
+    )(time_grid) for surv_curve in theoretical_survival_curves
+])
+
+evaluator("Data generative process", theoretical_survival_curves)
+
+# %%
+evaluator.plot(model_names=["Polynomial Cox PH", "Gradient Boosting CIF", "Data generative process"])
+
+# %% [markdown]
+# We observe that our best models are quite close to the theoretical optimum but there is still some slight margin for improvement. It's possible that re-training the same model pipelines with a larger number of training sample could help close that gap.
+#
+# Note that the IBS and C-index values of the theoretical survival curves are far from 0.0 and 1.0 respectively: this is expected because not all the variations of the target `y` can be explained by the values of the columns of `X`: there is still a large irreducible amount of unpredictable "noise" in this data generating process.
 
 # %% [markdown]
 # Other survival models:
