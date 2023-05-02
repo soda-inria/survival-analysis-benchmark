@@ -888,7 +888,7 @@ evaluator("Gradient Boosting CIF", gb_cif_survival_curves)
 # This model is often better than Random Survival Forest but significantly faster to train and requires few feature engineering than a Cox PH model.
 
 # %% [markdown]
-# ### IV.4 Comparing our models to the optimal survival curves
+# ### IV.4 Comparing our estimates to the theoretical survival curves
 #
 # Since the dataset is synthetic, we can access the underlying hazard function for each row of `X_test`:
 
@@ -937,6 +937,11 @@ theoretical_survival_curves = np.asarray([
 
 evaluator("Data generative process", theoretical_survival_curves)
 
+# %% [markdown]
+# The fact that the C-index of the Polynomial Cox PH model seems to be larger than the C-index of the theoretical curves is quite unexpected and would deserve further investigation. It could be an artifact of our evaluation on a finite size test set.
+#
+# Let's redo this plot with a subset of the highest performing models to better constrast their time-dependent Brier scores:
+
 # %%
 evaluator.plot(model_names=[
     "Gradient Boosting CIF",
@@ -948,6 +953,19 @@ evaluator.plot(model_names=[
 # We observe that our best models are quite close to the theoretical optimum but there is still some slight margin for improvement. It's possible that re-training the same model pipelines with a larger number of training sample could help close that gap.
 #
 # Note that the IBS and C-index values of the theoretical survival curves are far from 0.0 and 1.0 respectively: this is expected because not all the variations of the target `y` can be explained by the values of the columns of `X`: there is still a large irreducible amount of unpredictable "noise" in this data generating process.
+
+# %% [markdown]
+# Since our estimators are conditional models, it's also interesting to compare the predicted survival curves for a few test samples and contrasting those to the
+# theoretical survival curves:
+
+# %%
+fig, axes = plt.subplots(nrows=5, sharex=True, figsize=(12, 25))
+
+for sample_idx, ax in enumerate(axes):
+    ax.plot(time_grid, gb_cif_survival_curves[sample_idx], label="Gradient Boosting CIF")
+    ax.plot(time_grid, poly_cox_ph_survival_curves[sample_idx], label="Polynomial Cox PH")
+    ax.plot(time_grid, theoretical_survival_curves[sample_idx], linestyle="--", label="True survival curve")
+    ax.legend()
 
 # %% [markdown]
 # Other survival models:
@@ -1078,7 +1096,7 @@ fig, ax = plt.subplots()
 mean_survival_curve = gb_cif_survival_curves.mean(axis=0)
 ax.plot(time_grid, total_mean_cif, label="Total CIF")
 ax.plot(time_grid, mean_survival_curve, label="Any-event survival")
-ax.plot(time_grid, total_mean_cif + mean_survival_curve, label="Survival + CIF")
+ax.plot(time_grid, total_mean_cif + mean_survival_curve, label="Survival + total CIF")
 ax.legend();
 
 # %% [markdown]
