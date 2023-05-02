@@ -71,13 +71,13 @@ truck_failure_events
 # %% [markdown]
 # ### I.3 Why is it a problem to train time-to-event regression models?
 #
-# Without survival analysis, we have two options when confronting censored data:
+# Without survival analysis, we have two naive options to deal with right-censored time to event data:
 # - We ignore them, by only keeping events that happened and performing naive regression on them.
 # - We consider that all censored events happen at the end of our observation window.
 #
 # **Both approaches are wrong and lead to biased results.**
 #
-# Let's compute the average duration yielded by both approaches on our truck dataset. We will compare them to the mean of the ground-truth event time $T$, that we would obtained with an infinite observation window. 
+# Let's compute the average and median time to event using either of those naive approaches on our truck failure dataset. We will compare them to the mean of the ground-truth event time $T$, that we would obtained with an infinite observation window. 
 #
 # Note that we have access to the random variable $T$ because we generated this synthetic dataset. With real-world data, you only have access to $Y = \min(T, C)$, where $C$ is a random variable representing the censoring time.
 
@@ -124,22 +124,24 @@ print(
 )
 
 # %% [markdown]
-# We see that none of neither of the naive methods gives a good estimate of the ground truth.
+# We see that **neither of the naive ways to handle censoring gives a good estimate of the true mean or median time to event**.
 #
-# If we have access to covariates $X$ (also known as input features in machine learning), a naive regression method would try to estimate $\mathbb{E}[T|X]$, where $X$ are our covariates, but we only have access to $Y = \min(T, C)$ where $T$ is the true time to failure and $C$ is the censoring duration.
+# If we have access to covariates $X$ (also known as input features in machine learning), a regression method would try to estimate $\mathbb{E}[T|X]$, where $X$ are our covariates, but we only have access to $Y = \min(T, C)$ where $T$ is the true time to failure and $C$ is the censoring duration. Fitting a **conditional regression model on right-censored data** would also require a special treatment because either of the **naive preprocessing** presented above would introduce a **significant bias in the predictions**.
 #
 #
 # Here is structured outline of the estimators we will introduce in this tutorial:
 #
 #
-#
-# |                                          | Unconditional: only `y`, no `X`        | Conditional: `y` given  `X`                     |
-# |------------------------------------------|----------------------------------------|-------------------------------------------------|
-# | Suvival Analysis (1 event type)          | Kaplan-Meier                           | Cox PH, Survival Forests, Gradient Boosting CIF |
-# | Competing Risks Analysis (k event types) | Aalen-Johansen                         | Gradient Boosting CIF                           |
+# |                                          | Descriptive / unconditional: only `y`, no `X`        | Predictive / conditional: `y` given  `X`        |
+# |------------------------------------------|------------------------------------------------------|-------------------------------------------------|
+# | Suvival Analysis (1 event type)          | Kaplan-Meier                                         | Cox PH, Survival Forests, Gradient Boosting CIF |
+# | Competing Risks Analysis (k event types) | Aalen-Johansen                                       | Gradient Boosting CIF                           |
 #
 
 # %% [markdown]
+# Let's start with unconditional estimation of the any event survival curve.
+#
+#
 # ## II. Single event survival analysis with Kaplan Meier
 #
 # We now introduce the survival analysis approach to the problem of estimating the time-to-event from censored data. For now, we ignore any information from $X$ and focus on $y$ only.
@@ -205,17 +207,17 @@ fig.update_layout(
 
 # %% [markdown]
 # ***Exercice*** <br>
-# Based on `times` and `survival_probs`, estimate the median survival time.
-# *Hint: Use `np.searchsorted`*.
+# Based on `times` and `survival_probabilities`, estimate the median survival time.
+#
+# *Hint: You can use `np.searchsorted` on sorted probabilities in increasing order (reverse order of the natural ordering of survival probabilities*.
 
 # %%
-def get_median_survival_probs(times, survival_probs):
-    """Get the closest time to a survival proba of 50%.
-    """
+def compute_median_survival_time(times, survival_probabilities):
+    """Get the closest time to a survival probability of 50%."""
     ### Your code here
-    median_survival_probs_time = 0
+    median_survival_time = 0
     ###
-    return median_survival_probs_time
+    return median_survival_time
 
 
 
@@ -228,21 +230,21 @@ def get_median_survival_probs(times, survival_probs):
 
 
 
-get_median_survival_probs(times, survival_probs)
+compute_median_survival_time(times, survival_probs)
 
 
 # %%
 ### Solution
 
-def get_median_survival_probs(times, survival_probs):
+def compute_median_survival_time(times, survival_probabilities):
     """Get the closest time to a survival proba of 50%."""
-    # Search sorted needs an ascending ordered array.
-    sorted_survival_probs = survival_probs[::-1]
-    median_idx = np.searchsorted(sorted_survival_probs, 0.50)
-    median_survival_probs_time = times[-median_idx]
-    return median_survival_probs_time
+    # Search sorted needs an array of ascending values:
+    increasing_survival_probabilities = survival_probabilities[::-1]
+    median_idx = np.searchsorted(increasing_survival_probabilities, 0.50)
+    median_survival_time = times[-median_idx]
+    return median_survival_time
 
-get_median_survival_probs(times, survival_probs)
+compute_median_survival_time(times, survival_probs)
 
 # %% [markdown]
 # This should be an unbiased estimate of the median uncensored duration:
@@ -405,7 +407,6 @@ time_grid = make_test_time_grid(y_test["duration"])
 # curve for any individual in the training and test sets as it does
 #not depend on features values of the X_train and X_test matrices.
 km_curve = km_predict(time_grid)
-y_pred_km_train = np.vstack([km_curve] * y_train.shape[0])
 y_pred_km_test = np.vstack([km_curve] * y_test.shape[0])
 
 
@@ -431,10 +432,13 @@ _, km_brier_scores = brier_score(
 from matplotlib import pyplot as plt
 import seaborn as sns; sns.set_style("darkgrid")
 
-plt.plot(time_grid, km_brier_scores, label="test");
-plt.title("Time-varying Brier score of Kaplan Meier estimation (lower is better)");
-plt.legend()
-plt.xlabel("time (days)");
+fig, ax = plt.subplots(figsize=(12, 5))
+ax.plot(time_grid, km_brier_scores, label="KM on test data");
+ax.set(
+    title="Time-varying Brier score of Kaplan Meier estimation (lower is better)",
+    xlabel = "time (days)",
+)
+ax.legend();
 
 # %% [markdown]
 # Additionnaly, we compute the Integrated Brier Score (IBS) which we will use to rank estimators:
@@ -452,7 +456,7 @@ km_ibs_test = integrated_brier_score(
 print(f"IBS of Kaplan-Meier estimator on test set: {km_ibs_test:.3f}")
 
 # %% [markdown]
-# Since the KM estimator always predicts the same constant survival curve for any samples in `X_train` or `X_test`, it has the same IBS on both subsets. Still, it's an interesting baseline because it's well calibrated among all the constant survival curve predictors.
+# Since the KM estimator always predicts the same constant survival curve for any samples in `X_train` or `X_test`, it's quite a limited model: it cannot rank individual by estimated median time to event for instance. Still, it's an interesting baseline because it's well calibrated among all the constant survival curve predictors.
 #
 # For instance we could compare to a model that would predict a linear decrease of the survival probability over time and measure the IBS on the same test data. The KM-survival curve is hopefully better than such a dummy predictor:
 
@@ -568,7 +572,7 @@ class SurvivalAnalysisEvaluator:
                 "C-index": info["c_index"],
             }
             for model_name, info in self.model_data.items()
-        ])
+        ]).round(decimals=3)
         
     def plot(self, model_names=None):
         if model_names is None:
@@ -596,7 +600,7 @@ class SurvivalAnalysisEvaluator:
 
 evaluator = SurvivalAnalysisEvaluator(y_train, y_test, time_grid)
 evaluator.add_model("Constant linear", constant_linear_survival_curves)
-evaluator.add_model("Kaplan Meier", y_pred_km_test)
+evaluator.add_model("Kaplan-Meier", y_pred_km_test)
 evaluator.plot()
 evaluator.metrics_table()
 
@@ -642,12 +646,12 @@ from sklearn.compose import make_column_transformer
 from sklearn.preprocessing import OneHotEncoder
 from sksurv.linear_model import CoxPHSurvivalAnalysis
 
-transformer = make_column_transformer(
+simple_preprocessor = make_column_transformer(
     (OneHotEncoder(), ["brand", "truck_model"]),
     remainder="passthrough",
 )
 cox_ph_pipeline = make_pipeline(
-    transformer,
+    simple_preprocessor,
     CoxPHSurvivalAnalysis(alpha=1e-4)
 )
 cox_ph_pipeline.fit(X_train, as_sksurv_recarray(y_train))
@@ -680,7 +684,7 @@ X_test.head(5).reset_index(drop=True)
 # %% [markdown]
 # ***Exercice***
 #
-# Plot the feature importance $\beta$ of the model (stored under `_coef`) with their names from the `get_feature_names_out()` method of the transformer.
+# Plot the feature importance $\beta$ of the model (stored under `_coef`) with their names from the `get_feature_names_out()` method of the preprocessor.
 #
 # *Hint*: You can access an element of a pipeline as simply as `pipeline[idx]`.
 
@@ -792,12 +796,12 @@ from sklearn.preprocessing import SplineTransformer
 from sklearn.kernel_approximation import Nystroem
 
 
-transformer = make_column_transformer(
+spline_preprocessor = make_column_transformer(
     (OneHotEncoder(), ["brand", "truck_model"]),
     (SplineTransformer(), ["driver_skill", "usage_rate"]),
 )
 poly_cox_ph_pipeline = make_pipeline(
-    transformer,
+    spline_preprocessor,
     Nystroem(kernel="poly", degree=2, n_components=300),
     CoxPHSurvivalAnalysis(alpha=1e-4)
 )
@@ -824,7 +828,7 @@ evaluator("Polynomial Cox PH", poly_cox_ph_survival_curves)
 from sksurv.ensemble import RandomSurvivalForest
 
 rsf = make_pipeline(
-    transformer,
+    simple_preprocessor,
     RandomSurvivalForest(n_estimators=10, max_depth=8, n_jobs=-1),
 )
 rsf.fit(X_train, as_sksurv_recarray(y_train))
@@ -857,6 +861,11 @@ evaluator("Random Survival Forest", rsf_survival_curves)
 
 # %% [markdown]
 # ### IV.3 GradientBoostedCIF
+#
+#
+# We now introduce a novel survival estimator named Gradient Boosting CIF. This estimator is based on the `HistGradientBoostingClassifier` of scikit-learn under the hood. It is named `CIF` because it has the capability to estimate cause-specific Cumulative Incidence Functions in a competing risks setting by minimizing a cause specific IBS objective function.
+#
+# Here we first introduce it as a conditional estimator of the any-event survival function by omitting the `event_of_interest` constructor parameter.
 
 # %%
 import sys; sys.path.append("..")
@@ -865,15 +874,15 @@ from model_selection.wrappers import PipelineWrapper
 
 
 gb_cif = make_pipeline(
-    transformer,
+    simple_preprocessor,
     GradientBoostedCIF(n_iter=100, max_leaf_nodes=5, learning_rate=0.1),
 )
 gb_cif = PipelineWrapper(gb_cif)
 gb_cif.fit(X_train, y_train, time_grid)
 
 # %%
-gbcif_survival_curves = gb_cif.predict_survival_function(X_test, time_grid)
-evaluator("Gradient Boosting CIF", gbcif_survival_curves)
+gb_cif_survival_curves = gb_cif.predict_survival_function(X_test, time_grid)
+evaluator("Gradient Boosting CIF", gb_cif_survival_curves)
 
 # %% [markdown]
 # This model is often better than Random Survival Forest but significantly faster to train and requires few feature engineering than a Cox PH model.
@@ -929,7 +938,11 @@ theoretical_survival_curves = np.asarray([
 evaluator("Data generative process", theoretical_survival_curves)
 
 # %%
-evaluator.plot(model_names=["Polynomial Cox PH", "Gradient Boosting CIF", "Data generative process"])
+evaluator.plot(model_names=[
+    "Gradient Boosting CIF",
+    "Polynomial Cox PH",
+    "Data generative process",
+])
 
 # %% [markdown]
 # We observe that our best models are quite close to the theoretical optimum but there is still some slight margin for improvement. It's possible that re-training the same model pipelines with a larger number of training sample could help close that gap.
@@ -1033,23 +1046,43 @@ time_grid = make_test_time_grid(y_test["duration"])
 total_mean_cif = np.zeros(time_grid.shape[0])
 
 fig, ax = plt.subplots()
-for event in competing_risk_ids:    
-    gb_cif = make_pipeline(
-        transformer,
-        GradientBoostedCIF(event_of_interest=event, max_leaf_nodes=5, n_iter=50, learning_rate=0.1),
+for k in competing_risk_ids:    
+    gb_cif_k = make_pipeline(
+        simple_preprocessor,
+        GradientBoostedCIF(
+            event_of_interest=k, max_leaf_nodes=5, n_iter=50, learning_rate=0.1
+        ),
     )
-    gb_cif = PipelineWrapper(gb_cif)
+    gb_cif_k = PipelineWrapper(gb_cif_k)
     
-    gb_cif.fit(X_train, y_cr_train, time_grid)
-    cif_matrix_k = gb_cif.predict_cumulative_incidence(X_test, time_grid)
+    gb_cif_k.fit(X_train, y_cr_train, time_grid)
+    cif_curves_k = gb_cif_k.predict_cumulative_incidence(X_test, time_grid)
     
-    mean_cif_k = cif_matrix_k.mean(axis=0)
-    total_mean_cif += mean_cif_k
-    ax.plot(time_grid, mean_cif_k, label=f"event {event}")
+    mean_cif_curve_k = cif_curves_k.mean(axis=0)  # average over test points
+    ax.plot(time_grid, mean_cif_curve_k, label=f"event {event}")
+
+    total_mean_cif += mean_cif_curve_k
 
 ax.plot(time_grid, total_mean_cif, label="total", linestyle="--", color="black")
 ax.set(xlabel="time in days", ylabel="Cumulative Incidence")
 plt.legend();
+
+# %% [markdown]
+# Let also reuse the any-event survival estimates to check that:
+#
+# $$\hat{S}(t) = 1 - \sum_k \hat{CIF_k}(t)$$
+#
+
+# %%
+fig, ax = plt.subplots()
+mean_survival_curve = gb_cif_survival_curves.mean(axis=0)
+ax.plot(time_grid, total_mean_cif, label="Total CIF")
+ax.plot(time_grid, mean_survival_curve, label="Any-event survival")
+ax.plot(time_grid, total_mean_cif + mean_survival_curve, label="Survival + CIF")
+ax.legend();
+
+# %% [markdown]
+# So we see that our Gradient Boosting CIF estimator seems to be unbiased as the sum of the mean CIF curves then mean any-event survival curve seems to randomly fluctuate around 1.0.
 
 # %% [markdown]
 # In the second section of this tutorial, we'll study our GradientBoostedCIF in more depth by understanding how to find the median survival probability and compute its feature importance.
