@@ -621,28 +621,38 @@ array_names
 # +
 from joblib import Parallel, delayed
 
-truck_failure_100k = sample_driver_truck_pairs_with_metadata(100_000, random_seed=0)
-chunk_size = 1000
-n_chunks, remainder = divmod(truck_failure_100k.shape[0], chunk_size)
-assert remainder == 0
+chunk_size = 10_000
+n_chunks = 10
 
 
-def sample_chunk(data, chunk_idx):
-    start, stop = chunk_idx * chunk_size, (chunk_idx + 1) * chunk_size
-    features_chunk = data.iloc[start:stop]
-    event_chunk, _, _ = sample_competing_events(features_chunk, random_seed=chunk_idx)
-    return event_chunk
+def sample_chunk(chunk_idx, chunk_size):
+    features_chunk = sample_driver_truck_pairs_with_metadata(chunk_size, random_seed=chunk_idx)
+    events_chunk, _, _ = sample_competing_events(features_chunk, random_seed=chunk_idx)
+    return features_chunk, events_chunk
 
 
-all_event_chunks = Parallel(n_jobs=4, verbose=10)(
-    delayed(sample_chunk)(truck_failure_100k, i) for i in range(n_chunks)
+results = Parallel(n_jobs=-1, verbose=10)(
+    delayed(sample_chunk)(i, chunk_size) for i in range(n_chunks)
 )
-truck_failure_100k_events = pd.concat(all_event_chunks, axis="rows")
+truck_failure_100k = pd.concat([features_chunk for features_chunk, _ in results], axis="rows")
+truck_failure_100k_events = pd.concat([events_chunk for _, events_chunk in results], axis="rows")
 plot_stacked_occurrences(truck_failure_100k_events)
+# -
+
+# Note: we ensured that the chunk size is 10_000 and the random seed is based on the chunk index to ensure that the `truck_failure_100k` dataset is a super set of the `truck_failure_10k` dataset.
+
+# +
+from pandas.testing import assert_frame_equal
+
+assert_frame_equal(truck_failure_100k[observed_variables].iloc[:10_000].reset_index(drop=True), truck_failure_10k[observed_variables].reset_index(drop=True))
+assert_frame_equal(truck_failure_100k[observed_variables].iloc[:10_000].reset_index(drop=True), truck_failure_10k[observed_variables].reset_index(drop=True))
 # -
 
 truck_failure_100k[observed_variables].to_parquet("truck_failure_100k_features.parquet", index=False)
 truck_failure_100k_events.to_parquet("truck_failure_100k_competing_risks.parquet", index=False)
+truck_failure_100k_any_event = truck_failure_100k_events.copy()
+truck_failure_100k_any_event["event"] = truck_failure_100k_any_event["event"] > 0
+truck_failure_100k_any_event.to_parquet("truck_failure_100k_any_event.parquet", index=False)
 
 # ## Sampling targets at fixed conditional X
 #
