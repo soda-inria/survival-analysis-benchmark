@@ -371,7 +371,7 @@ X = truck_failure_features
 y = truck_failure_events
 
 X_train, X_test, y_train, y_test, idx_train, idx_test = train_test_split_within(
-    X, y, np.arange(X.shape[0]), test_size=0.5, random_state=0
+    X, y, np.arange(X.shape[0]), test_size=0.75, random_state=0
 )
 
 # %%
@@ -888,6 +888,50 @@ evaluator("Gradient Boosting CIF", gb_cif_survival_curves)
 # This model is often better than Random Survival Forest but significantly faster to train and requires few feature engineering than a Cox PH model.
 
 # %% [markdown]
+# Let's try to improve the performance of the models that train fast on a larger dataset. As the `truck_failure_100k` dataset is a superset of the `truck_failure_10k` dataset, we reuse the sample test sampples to simplify model evaluation:
+
+# %%
+truck_failure_100k_any_event = pd.read_parquet("truck_failure_100k_any_event.parquet")
+truck_failure_100k_features = pd.read_parquet("truck_failure_100k_features.parquet")
+
+train_large_mask = np.full(shape=truck_failure_100k_any_event.shape[0], fill_value=True)
+train_large_mask[idx_test] = False
+X_train_large = truck_failure_100k_features[train_large_mask]
+y_train_large = truck_failure_100k_any_event[train_large_mask]
+
+large_evaluator = SurvivalAnalysisEvaluator(y_train_large, y_test, time_grid)
+
+# %%
+# %%time
+poly_cox_ph_pipeline_large = make_pipeline(
+    spline_preprocessor,
+    Nystroem(kernel="poly", degree=2, n_components=300),
+    CoxPHSurvivalAnalysis(alpha=1e-4)
+)
+poly_cox_ph_pipeline_large.fit(X_train_large, as_sksurv_recarray(y_train_large))
+poly_cox_ph_pipeline_large_survival_funcs = poly_cox_ph_pipeline_large.predict_survival_function(X_test)
+
+
+poly_cox_ph_pipeline_large_survival_curves = np.vstack(
+    [
+        f(time_grid) for f in poly_cox_ph_pipeline_large_survival_funcs
+    ]
+)
+large_evaluator("Polynomial Cox PH (larger training set)", poly_cox_ph_pipeline_large_survival_curves)
+
+# %%
+# %%time
+gb_cif_large = make_pipeline(
+    simple_preprocessor,
+    GradientBoostedCIF(n_iter=100, max_leaf_nodes=31, learning_rate=0.1),
+)
+gb_cif_large = PipelineWrapper(gb_cif_large)
+gb_cif_large.fit(X_train_large, y_train_large, time_grid)
+gb_cif_large_survival_curves = gb_cif_large.predict_survival_function(X_test, time_grid)
+
+large_evaluator("Gradient Boosting CIF (larger training set)", gb_cif_large_survival_curves)
+
+# %% [markdown]
 # ### IV.4 Comparing our estimates to the theoretical survival curves
 #
 # Since the dataset is synthetic, we can access the underlying hazard function for each row of `X_test`:
@@ -940,14 +984,10 @@ evaluator("Data generative process", theoretical_survival_curves)
 # %% [markdown]
 # The fact that the C-index of the Polynomial Cox PH model seems to be larger than the C-index of the theoretical curves is quite unexpected and would deserve further investigation. It could be an artifact of our evaluation on a finite size test set.
 #
-# Let's redo this plot with a subset of the highest performing models to better constrast their time-dependent Brier scores:
+# Let's also compare with the version of the model trained on the large dataset:
 
 # %%
-evaluator.plot(model_names=[
-    "Gradient Boosting CIF",
-    "Polynomial Cox PH",
-    "Data generative process",
-])
+large_evaluator("Data generative process", theoretical_survival_curves)
 
 # %% [markdown]
 # We observe that our best models are quite close to the theoretical optimum but there is still some slight margin for improvement. It's possible that re-training the same model pipelines with a larger number of training sample could help close that gap.
@@ -962,8 +1002,8 @@ evaluator.plot(model_names=[
 fig, axes = plt.subplots(nrows=5, sharex=True, figsize=(12, 25))
 
 for sample_idx, ax in enumerate(axes):
-    ax.plot(time_grid, gb_cif_survival_curves[sample_idx], label="Gradient Boosting CIF")
-    ax.plot(time_grid, poly_cox_ph_survival_curves[sample_idx], label="Polynomial Cox PH")
+    ax.plot(time_grid, gb_cif_large_survival_curves[sample_idx], label="Gradient Boosting CIF")
+    ax.plot(time_grid, poly_cox_ph_pipeline_large_survival_curves[sample_idx], label="Polynomial Cox PH")
     ax.plot(time_grid, theoretical_survival_curves[sample_idx], linestyle="--", label="True survival curve")
     ax.legend()
 
@@ -1056,8 +1096,8 @@ plt.legend();
 
 # %%
 y_cr = truck_failure_competing_events
-X_train, X_test, y_cr_train, y_cr_test, idx_train, idx_test = train_test_split_within(
-    X, y_cr, np.arange(X.shape[0]), random_state=0
+X_train_cr, X_test_cr, y_cr_train, y_cr_test, idx_train, idx_test = train_test_split_within(
+    X, y_cr, np.arange(X.shape[0]), test_size=0.25, random_state=0
 )
 
 time_grid = make_test_time_grid(y_test["duration"])
@@ -1077,7 +1117,7 @@ for k in competing_risk_ids:
     cif_curves_k = gb_cif_k.predict_cumulative_incidence(X_test, time_grid)
     
     mean_cif_curve_k = cif_curves_k.mean(axis=0)  # average over test points
-    ax.plot(time_grid, mean_cif_curve_k, label=f"event {event}")
+    ax.plot(time_grid, mean_cif_curve_k, label=f"event {k}")
 
     total_mean_cif += mean_cif_curve_k
 
@@ -1104,3 +1144,5 @@ ax.legend();
 
 # %% [markdown]
 # In the second section of this tutorial, we'll study our GradientBoostedCIF in more depth by understanding how to find the median survival probability and compute its feature importance.
+
+# %%
