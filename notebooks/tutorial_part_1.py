@@ -127,6 +127,17 @@ print(
 # We see that none of neither of the naive methods gives a good estimate of the ground truth.
 #
 # If we have access to covariates $X$ (also known as input features in machine learning), a naive regression method would try to estimate $\mathbb{E}[T|X]$, where $X$ are our covariates, but we only have access to $Y = \min(T, C)$ where $T$ is the true time to failure and $C$ is the censoring duration.
+#
+#
+# Here is structured outline of the estimators we will introduce in this tutorial:
+#
+#
+#
+# |                                          | Unconditional: only `y`, no `X`        | Conditional: `y` given  `X`                     |
+# |------------------------------------------|----------------------------------------|-------------------------------------------------|
+# | Suvival Analysis (1 event type)          | Kaplan-Meier                           | Cox PH, Survival Forests, Gradient Boosting CIF |
+# | Competing Risks Analysis (k event types) | Aalen-Johansen                         | Gradient Boosting CIF                           |
+#
 
 # %% [markdown]
 # ## II. Single event survival analysis with Kaplan Meier
@@ -674,13 +685,13 @@ X_test.head(5).reset_index(drop=True)
 # *Hint*: You can access an element of a pipeline as simply as `pipeline[idx]`.
 
 # %%
-cox_ph_pipeline
+cox_ph_pipeline  # the full pipeline
 
 # %%
-cox_ph_pipeline[0]
+cox_ph_pipeline[0]  # the first step of the pipeline
 
 # %%
-cox_ph_pipeline[1]
+cox_ph_pipeline[1]  # the second step of the pipeline
 
 # %%
 ### Your code here
@@ -689,7 +700,7 @@ cox_ph_pipeline[1]
 
 
 feature_names = []
-weight = []
+weights = []
 
 
 
