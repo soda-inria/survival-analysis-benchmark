@@ -1014,7 +1014,9 @@ plt.legend();
 
 # %%
 y_cr = truck_failure_competing_events
-X_train, X_test, y_cr_train, y_cr_test = train_test_split_within(X, y_cr, random_state=0)
+X_train, X_test, y_cr_train, y_cr_test, idx_train, idx_test = train_test_split_within(
+    X, y_cr, np.arange(X.shape[0]), random_state=0
+)
 
 time_grid = make_test_time_grid(y_test["duration"])
 total_mean_cif = np.zeros(time_grid.shape[0])
