@@ -803,7 +803,7 @@ spline_preprocessor = make_column_transformer(
 poly_cox_ph_pipeline = make_pipeline(
     spline_preprocessor,
     Nystroem(kernel="poly", degree=2, n_components=300),
-    CoxPHSurvivalAnalysis(alpha=1e-4)
+    CoxPHSurvivalAnalysis(alpha=1e-2)
 )
 poly_cox_ph_pipeline.fit(X_train, as_sksurv_recarray(y_train))
 poly_cox_ph_survival_funcs = poly_cox_ph_pipeline.predict_survival_function(X_test)
