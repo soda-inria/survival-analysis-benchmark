@@ -266,10 +266,81 @@ def compute_median_survival_time_with_interp1d(times, survival_probabilities):
 compute_median_survival_time_with_interp1d(times, km_survival_probabilities)
 
 # %% [markdown]
-# This should be an unbiased estimate of the median uncensored duration:
+# Here is the true median survival time from the same data without any censoring (generally not avaible in a real life setting).
 
 # %%
 truck_failure_events_uncensored["duration"].median()
+
+# %% [markdown]
+# This empirically confirms that the median survival time estimated by post-processing the KM estimation of the survival curve is a much better way to handle censored data than any the two naive approaches we considered in the beginning of this notebook.
+
+# %% [markdown]
+# ### Mathematical break
+#
+# We now introduce some quantities which are going to be at the core of many survival analysis models and Kaplan-Meier in particular.
+#
+# The most important concept is the hazard rate $\lambda(t)$. This quantity represents the "speed of failure" or **the probability that an event occurs in the next $dt$, given that it hasn't occured yet**. This can be written as:
+#
+# $$\begin{align}
+# \lambda(t) &=\lim_{dt\rightarrow 0}\frac{P(t \leq T < t + dt | P(T \geq t))}{dt} \\
+# &= \lim_{dt\rightarrow 0}\frac{P(t \leq T < t + dt)}{dtS(t)} \\
+# &= \frac{f(t)}{S(t)}
+# \end{align}
+# $$
+#
+# where $f(t)$ represents the probability density. This quantity estimates the probability that an event occurs in the next $dt$, independently of this event having happened before.
+
+# %% [markdown]
+# If we integrate $f(t)$, we found the cumulative incidence function (CIF) $F(t)=P(T < t)$, which is the complement of the survival function $S(t)$:
+#
+# $$F(t) = 1 - S(t) = \int^t_0 f(u) du$$
+
+# %% [markdown]
+# Most of the time we do not attempt to evaluate $f(t)$. Instead we usually define the cumulative hazard function by integrating the hazard function:
+#
+# $$\Lambda(t) = \int^t_0 \lambda(u) du$$
+#
+# It can be shown that the survival function (and therefore the cumulative incidence function) can be computed as:
+#
+# $$S(t) = e^{-\Lambda(t)}$$
+#
+# $$F(t) = 1 - e^{-\Lambda(t)}$$
+#
+# and if we have an estimate of $S(t)$ we can derive estimates of the cumulative hazard and instantenous hazard functions as:
+#
+# $$\Lambda(t) = - log(S(t))$$
+#
+# $$\lambda(t) = - \frac{S'(t)}{S(t)}$$
+#
+# In practice, estimating the hazard function from a finite sample estimate of the survival curve can be quite challenging (from a numerical point of view). But the converse often works well.
+#
+# Since our dataset was sampled from known hazard functions (one per record), we can compute the theoretical survival curve by integrating over the time and taking the exponential of the negative. Let's give this a try:
+
+# %%
+with np.load("truck_failure_10k_hazards.npz") as f:
+    theoretical_hazards = f["truck_failure_10k_hazards"].sum(axis=0)  # will be explained later
+
+theoretical_hazards.shape
+
+# %%
+import matplotlib.pyplot as plt
+
+
+theoretical_cumulated_hazards = theoretical_hazards.cumsum(axis=-1)
+mean_theoretical_survival_functions = np.exp(-theoretical_cumulated_hazards).mean(axis=0)
+n_time_steps = mean_theoretical_survival_functions.shape[0]
+
+fig, ax = plt.subplots(figsize=(12, 5))
+ax.plot(times, km_survival_probabilities, label="Kaplan-Meier")
+ax.plot(
+    np.arange(n_time_steps), mean_theoretical_survival_functions,
+    linestyle="--", label="Theoretical"
+)
+ax.set(title="Mean survival curve", xlabel="Time (days)")
+ax.legend();
+
+# %% [markdown]
+# We observe that the Kaplan-Meier estimate is an unbiased estimator of the survival curve defined by the true hazard functions. However we observe that then **KM estimate is no longer defined after the time of the last observed failure** (day 2000 in our case). In this dataset, all events are censored past that date: as a result **the KM survival curve does not reach zero** even when the true curve does. Therefore, it is **not possible to compute the mean survival time from the KM-estimate** alone. One would need to make some further assumptions to extrapolate it if necessary.
 
 # %% [markdown]
 # ### Kaplan-Meier on subgroups: stratification on columns of `X`
@@ -652,22 +723,6 @@ evaluator.metrics_table()
 # Next, we'll study how to fit survival models that make predictions that depend on the covariates $X$.
 #
 # ## IV. Predictive survival analysis
-#
-# We now introduce some quantities which are going to be at the core of many survival analysis models.
-#
-# The most important concept is the hazard rate $\lambda(t)$. This quantity represents the "speed of failure" or **the probability that an event occurs in the next $dt$, given that it hasn't occured yet**. This can be written as:
-#
-# $$\begin{align}
-# \lambda(t) &=\lim_{dt\rightarrow 0}\frac{P(t \leq T < t + dt | P(T \geq t))}{dt} \\
-# &= \lim_{dt\rightarrow 0}\frac{P(t \leq T < t + dt)}{dtS(t)} \\
-# &= \frac{f(t)}{S(t)}
-# \end{align}
-# $$
-#
-# where $f(t)$ represents the probability density. This quantity estimates the probability that an event occurs in the next $dt$, independently of this event having happened before. <br>
-# If we integrate $f(t)$, we found the cumulative incidence function (CIF) $F(t)=P(T < t)$, which is the complement of the survival function $S(t)$:
-#
-# $$F(t) = 1 - S(t) = \int^\infty_0f(t)dt$$
 
 # %% [markdown]
 # ### IV.1 Cox Proportional Hazards
@@ -982,14 +1037,14 @@ large_evaluator("Gradient Boosting CIF (larger training set)", gb_cif_large_surv
 
 # %%
 with np.load("truck_failure_10k_hazards.npz") as f:
-    all_theoretical_hazards = f["truck_failure_10k_hazards"]
-all_theoretical_hazards.shape
+    theoretical_hazards = f["truck_failure_10k_hazards"]
+theoretical_hazards.shape
 
 # %% [markdown]
 # The first axis correspond to the 3 types of failures of this dataset (that will be covered in the next section). For now let's collapse them all together an consider the "any event" hazard functions:
 
 # %%
-any_event_hazards = all_theoretical_hazards.sum(axis=0)
+any_event_hazards = theoretical_hazards.sum(axis=0)
 any_event_hazards.shape
 
 # %% [markdown]
@@ -1026,7 +1081,7 @@ theoretical_survival_curves = np.asarray([
 evaluator("Data generative process", theoretical_survival_curves)
 
 # %% [markdown]
-# The fact that the C-index of the Polynomial Cox PH model seems to be larger than the C-index of the theoretical curves is quite unexpected and would deserve further investigation. It could be an artifact of our evaluation on a finite size test set.
+# The fact that the C-index of the Polynomial Cox PH model can some times be larger than the C-index of the theoretical curves is quite unexpected and would deserve further investigation. It could be an artifact of our evaluation on a finite size test set and the use of partially censored test data.
 #
 # Let's also compare with the version of the model trained on the large dataset:
 
@@ -1049,7 +1104,14 @@ for sample_idx, ax in enumerate(axes):
     ax.plot(time_grid, gb_cif_large_survival_curves[sample_idx], label="Gradient Boosting CIF")
     ax.plot(time_grid, poly_cox_ph_pipeline_large_survival_curves[sample_idx], label="Polynomial Cox PH")
     ax.plot(time_grid, theoretical_survival_curves[sample_idx], linestyle="--", label="True survival curve")
+    ax.plot(time_grid, 0.5 * np.ones_like(time_grid), linestyle="--", color="black", label="50% probability")
+    ax.set(ylim=[-.01, 1.01])
     ax.legend()
+
+# %% [markdown]
+# The individual survival functions predicted by the polynomial Cox PH model are always smooth but we can observe that they do now always match the shape of the true survival curve on some test datapoints.
+#
+# We can also observe that the individual survival curves of the Gradient Boosting CIF model **suffer from the constant-piecewise prediction function of the underlying decision trees**. But despite this limitation, this model still yields very good approximation to the true survival curves. In particular they can provide competitive estimates of the median survival time for instance.
 
 # %% [markdown]
 # Other survival models:
@@ -1190,5 +1252,3 @@ ax.legend();
 
 # %% [markdown]
 # In the second section of this tutorial, we'll study our GradientBoostedCIF in more depth by understanding how to find the median survival probability and compute its feature importance.
-
-# %%

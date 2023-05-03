@@ -462,14 +462,26 @@ def uniform_censoring(occurrences, censoring_weight=0.5, offset=0, random_state=
 
 censored_events = uniform_censoring(competing_events, random_state=0)
 plot_stacked_occurrences(censored_events)
-
-
 # -
+
+# It is often the case that there is deterministic component to the censoring distribution that stems from a maximum observation duration:
+
+max_observation_duration = 2000
+max_duration_mask = censored_events["duration"] > max_observation_duration
+censored_events.loc[max_duration_mask, "duration"] = max_observation_duration
+censored_events.loc[max_duration_mask, "event"] = 0
+plot_stacked_occurrences(censored_events)
+
 
 # Let's put it all data generation steps together.
 
 # +
-def sample_competing_events(data, uniform_censoring_weight=1.0, random_seed=None):
+def sample_competing_events(
+    data,
+    uniform_censoring_weight=1.0,
+    max_observation_duration=2000,
+    random_seed=None,
+):
     rng = check_random_state(random_seed)
     t = np.linspace(0, total_days, total_days)
     hazard_funcs = [
@@ -489,6 +501,11 @@ def sample_competing_events(data, uniform_censoring_weight=1.0, random_seed=None
     censored_occurrences = uniform_censoring(
         occurrences, censoring_weight=uniform_censoring_weight, random_state=rng
     )
+    if max_observation_duration is not None:
+        # censor all events after max_observation_duration
+        max_duration_mask = censored_occurrences["duration"] > max_observation_duration
+        censored_occurrences.loc[max_duration_mask, "duration"] = max_observation_duration
+        censored_occurrences.loc[max_duration_mask, "event"] = 0
     return (
         censored_occurrences,
         occurrences,
