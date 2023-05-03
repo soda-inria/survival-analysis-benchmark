@@ -303,7 +303,7 @@ truck_failure_features_and_events
 import matplotlib.pyplot as plt
 
 
-def plot_brands_km(df):
+def plot_km_curve_by_brand(df):
     brands = df["brand"].unique()
     fig_data = []
     for brand in brands:
@@ -313,7 +313,7 @@ def plot_brands_km(df):
     plt.title("Survival curves by brand")
 
     
-plot_brands_km(truck_failure_features_and_events)
+plot_km_curve_by_brand(truck_failure_features_and_events)
 
 # %% [markdown]
 # **Solution**: click below to expand the cell:
@@ -322,7 +322,7 @@ plot_brands_km(truck_failure_features_and_events)
 import matplotlib.pyplot as plt
 
 
-def plot_brands_km(df):
+def plot_km_curve_by_brand(df):
     brands = df["brand"].unique()
     fig_data = []
     for brand in brands:
@@ -333,7 +333,7 @@ def plot_brands_km(df):
     plt.legend()
     plt.title("Survival curves by brand")
     
-plot_brands_km(truck_failure_features_and_events)
+plot_km_curve_by_brand(truck_failure_features_and_events)
 
 # %% [markdown]
 # We can observe that drivers of "Cheapz" trucks seem to experiment a higher number of failures in the early days but then the cumulative number of failures for each group seem to become comparable. Very truck seem to operate after 2500 days (~7 years) without having experienced any failure.
@@ -356,9 +356,6 @@ plot_brands_km(truck_failure_features_and_events)
 #
 # It is comprised between 0 and 1 (lower is better).
 # It answers the question "how close to the real probabilities are our estimates?".
-#
-#
-#
 
 # %% [markdown]
 # <details><summary>Mathematical formulation</summary>
@@ -367,7 +364,8 @@ plot_brands_km(truck_failure_features_and_events)
 #         \frac{(0 - \hat{S}(t | \mathbf{x}_i))^2}{\hat{G}(d_i)} + I(d_i > t)
 #         \frac{(1 - \hat{S}(t | \mathbf{x}_i))^2}{\hat{G}(t)}$$
 #     
-# In the survival analysis context, the Brier Score can be seen as the Mean Squared Error (MSE) between our probability $\hat{S}(t)$ and our target label $\delta_i \in {0, 1}$, weighted by the inverse probability of censoring $\frac{1}{\hat{G}(t)}$.
+# In the survival analysis context, the Brier Score can be seen as the Mean Squared Error (MSE) between our probability $\hat{S}(t)$ and our target label $\delta_i \in {0, 1}$, weighted by the inverse probability of censoring $\frac{1}{\hat{G}(t)}$. In practice we estimate `\hat{G}(t)` using a variant of the Kaplan-Estimator with swapped event indicator.
+#
 # - When no event or censoring has happened at $t$ yet, i.e. $I(d_i > t)$, we penalize a low probability of survival with $(1 - \hat{S}(t|\mathbf{x}_i))^2$.
 # - Conversely, when an individual has experienced an event before $t$, i.e. $I(d_i \leq t \land \delta_i = 1)$, we penalize a high probability of survival with $(0 - \hat{S}(t|\mathbf{x}_i))^2$.
 #     
@@ -376,6 +374,9 @@ plot_brands_km(truck_failure_features_and_events)
 # </figure>
 #     
 # </details>
+
+# %% [markdown]
+# Let's put this in practice. We first perform a train test split so as to fit the estimator on a traing sample and compute the performance metrics on a held-out test sample. Due to restructions of some estimators in scikit-survival, we ensure that all the test data points lie well within the time range observed in the training set.
 
 # %%
 from sklearn.model_selection import train_test_split
@@ -402,8 +403,6 @@ X_train, X_test, y_train, y_test, idx_train, idx_test = train_test_split_within(
 # Let's estimate the survival curve on the training set:
 
 # %%
-from scipy.interpolate import interp1d
-
 km_times_train, km_survival_curve_train = kaplan_meier_estimator(
     y_train["event"], y_train["duration"]
 )
@@ -412,7 +411,7 @@ km_times_train, km_survival_curve_train = kaplan_meier_estimator(
 # The `km_times_train` are ordered event (or censoring) times actually observed on the training set. To be able to compare that curve with curves computed on another time grid, we can use step-wise constant interpolation:
 
 # %%
-from sksurv.metrics import brier_score
+from scipy.interpolate import interp1d
 
 
 km_predict = interp1d(
@@ -424,14 +423,14 @@ km_predict = interp1d(
 )
 
 
-def make_test_time_grid(duration):
+def make_test_time_grid(duration, n_steps=300):
     """Bound times to the range of duration."""
     # Some survival models can fail to predict near the boundary of the
     # range of durations observed on the training set.
     span = duration.max() - duration.min()
     start = duration.min() + span / 20
     stop = duration.max() - span / 20
-    return np.linspace(start, stop, num=100)
+    return np.linspace(start, stop, num=n_steps)
 
 
 time_grid = make_test_time_grid(y_test["duration"])
@@ -445,11 +444,13 @@ time_grid = make_test_time_grid(y_test["duration"])
 km_curve = km_predict(time_grid)
 y_pred_km_test = np.vstack([km_curve] * X_test.shape[0])
 
-
 # %% [markdown]
-# We can now compute on value of the Brier score for each time horizon in the test time grid using the values in `y_test` as ground truth targets:
+# We can now compute on value of the Brier score for each time horizon in the test time grid using the values in `y_test` as ground truth targets using `sksurv.metrics.brier_score`. At this time, scikit-survival expects the `y` arguments to be passed as numpy record arrays instead of pandas dataframes:
 
 # %%
+from sksurv.metrics import brier_score
+
+
 def as_sksurv_recarray(y_frame):
     """Return scikit-survival's specific target format."""
     y_recarray = np.empty(
@@ -1054,8 +1055,6 @@ for sample_idx, ax in enumerate(axes):
 # Other survival models:
 #
 # TODO: mention and link to XGBSE, DeepHit, SurvTrace...
-#
-# Also possible to improve the Cox PH model with non-linear feature engineering: SplineTransformer for numerical features then feature interaction via a Nystroem kernel approximation of degree 2 or 3 polynomial expansion.
 
 # %% [markdown]
 # ## V. Unconditional competing risks modeling with Aalen-Johanson
