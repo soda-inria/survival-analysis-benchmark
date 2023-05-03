@@ -173,15 +173,21 @@ import plotly.express as px
 from sksurv.nonparametric import kaplan_meier_estimator
 
 
-times, survival_probs = kaplan_meier_estimator(
+times, km_survival_probabilities = kaplan_meier_estimator(
     truck_failure_events["event"], truck_failure_events["duration"]
 )
 
-km_proba = pd.DataFrame(dict(time=times, survival_probs=survival_probs))
+# %%
+km_proba = pd.DataFrame(
+    dict(
+        time=times,
+        survival_curve=km_survival_probabilities
+    )
+)
 fig = px.line(
     km_proba,
     x="time",
-    y="survival_probs",
+    y="survival_curve",
     title="Kaplan-Meier survival probability",
 )
 fig.add_hline(
@@ -209,7 +215,7 @@ fig.update_layout(
 # ***Exercice*** <br>
 # Based on `times` and `survival_probabilities`, estimate the median survival time.
 #
-# *Hint: You can use `np.searchsorted` on sorted probabilities in increasing order (reverse order of the natural ordering of survival probabilities*.
+# *Hint: You can use `np.searchsorted` on sorted probabilities in increasing order (reverse order of the natural ordering of survival probabilities*. Alternatively you can "reverse" the estimate of the survival curve using an `scipy.interpolate.interp1d` and take the value at probability 0.5.
 
 # %%
 def compute_median_survival_time(times, survival_probabilities):
@@ -230,27 +236,43 @@ def compute_median_survival_time(times, survival_probabilities):
 
 
 
-compute_median_survival_time(times, survival_probs)
+compute_median_survival_time(times, km_survival_probabilities)
 
 
 # %%
 ### Solution
 
-def compute_median_survival_time(times, survival_probabilities):
-    """Get the closest time to a survival proba of 50%."""
+def compute_median_survival_time_with_searchsorted(times, survival_probabilities):
+    """Get the closest time to a survival probability of 50%."""
     # Search sorted needs an array of ascending values:
     increasing_survival_probabilities = survival_probabilities[::-1]
     median_idx = np.searchsorted(increasing_survival_probabilities, 0.50)
     median_survival_time = times[-median_idx]
     return median_survival_time
 
-compute_median_survival_time(times, survival_probs)
+
+compute_median_survival_time_with_searchsorted(times, km_survival_probabilities)
+
+# %%
+from scipy.interpolate import interp1d
+
+
+def compute_median_survival_time_with_interp1d(times, survival_probabilities):
+    """Get the time to a survival proba of 50% via linear interpolation."""
+    reverse_survival_func = interp1d(survival_probabilities, times, kind="linear")
+    return reverse_survival_func([0.5])[0]
+
+
+compute_median_survival_time_with_interp1d(times, km_survival_probabilities)
 
 # %% [markdown]
 # This should be an unbiased estimate of the median uncensored duration:
 
 # %%
 truck_failure_events_uncensored["duration"].median()
+
+# %% [markdown]
+# ### Kaplan-Meier on subgroups: stratification on columns of `X`
 
 # %% [markdown]
 # We can enrich our analysis by introducing covariates, that are statistically associated to the events and durations.
@@ -324,9 +346,11 @@ plot_brands_km(truck_failure_features_and_events)
 # ## III. Survival model evaluation using the Integrated Brier Score (IBS) and the Concordance Index (C-index)
 
 # %% [markdown]
-# The Brier score and the C-index are measures that assess the quality of predicted survival curve on a sample of data. The Brier score is a proper scoring rule, meaning that a model has minimal Brier score if and only if it correctly estimates the true survival probabilities induced by the underlying data generating process. In that respect the **Brier score** assesses both the **calibration** and the **ranking power** of a survival probability estimator.
+# The Brier score and the C-index are measures that **assess the quality of a predicted survival curve** on a finite data sample.
 #
-# On the other hand, the **C-index** only assesses the **ranking power**: it is invariant to a monotonic transform of the survival probabilities. It only focus on the ability of a predictive survival model to identify which individual is likely to fail first out of any pair of two individuals.
+# - **The Brier score is a proper scoring rule**, meaning that an estimate of the survival curve has minimal Brier score if and only if it matches the true survival probabilities induced by the underlying data generating process. In that respect the **Brier score** assesses both the **calibration** and the **ranking power** of a survival probability estimator.
+#
+# - On the other hand, the **C-index** only assesses the **ranking power**: it is invariant to a monotonic transform of the survival probabilities. It only focus on the ability of a predictive survival model to identify which individual is likely to fail first out of any pair of two individuals.
 #
 #
 #
@@ -374,23 +398,31 @@ X_train, X_test, y_train, y_test, idx_train, idx_test = train_test_split_within(
     X, y, np.arange(X.shape[0]), test_size=0.75, random_state=0
 )
 
+# %% [markdown]
+# Let's estimate the survival curve on the training set:
+
 # %%
 from scipy.interpolate import interp1d
 
-km_times, km_survival_probs = kaplan_meier_estimator(
+km_times_train, km_survival_curve_train = kaplan_meier_estimator(
     y_train["event"], y_train["duration"]
 )
 
+# %% [markdown]
+# The `km_times_train` are ordered event (or censoring) times actually observed on the training set. To be able to compare that curve with curves computed on another time grid, we can use step-wise constant interpolation:
+
+# %%
+from sksurv.metrics import brier_score
+
+
 km_predict = interp1d(
-    km_times,
-    km_survival_probs,
+    km_times_train,
+    km_survival_curve_train,
     kind="previous",
     bounds_error=False,
     fill_value="extrapolate",
 )
 
-# %%
-from sksurv.metrics import brier_score
 
 def make_test_time_grid(duration):
     """Bound times to the range of duration."""
@@ -401,15 +433,23 @@ def make_test_time_grid(duration):
     stop = duration.max() - span / 20
     return np.linspace(start, stop, num=100)
 
+
 time_grid = make_test_time_grid(y_test["duration"])
 
-# KM is a constant predictor: it always estimate the same survival
-# curve for any individual in the training and test sets as it does
-#not depend on features values of the X_train and X_test matrices.
+# %% [markdown]
+# Kaplan-Meier is a constant predictor: it always estimates the mean survival curve for all individual in the (training) dataset: the estimated survival curve does not depend on features values of the `X_train` or `X_test` matrices.
+#
+# To be able to compare the Kaplan-Meier estimator with conditional estimators who estimate indivudual survival curves for each row in `X_train` or `X_test` we treat KM as a constant predictor that always output the same survival curve as many times as there are rows in `X_test`:
+
+# %%
 km_curve = km_predict(time_grid)
-y_pred_km_test = np.vstack([km_curve] * y_test.shape[0])
+y_pred_km_test = np.vstack([km_curve] * X_test.shape[0])
 
 
+# %% [markdown]
+# We can now compute on value of the Brier score for each time horizon in the test time grid using the values in `y_test` as ground truth targets:
+
+# %%
 def as_sksurv_recarray(y_frame):
     """Return scikit-survival's specific target format."""
     y_recarray = np.empty(
@@ -441,7 +481,10 @@ ax.set(
 ax.legend();
 
 # %% [markdown]
-# Additionnaly, we compute the Integrated Brier Score (IBS) which we will use to rank estimators:
+# We observed that the "prediction error" is largest for time horizons between 200 and 1500 days after the beginning of the observation period.
+#
+#
+# Additionnaly, we compute the Integrated Brier Score (IBS) which we will use to summarize the Brier score curve and compare the quality of different estimators of the survival curve on the same test set:
 # $$IBS = \frac{1}{t_{max} - t_{min}}\int^{t_{max}}_{t_{min}} BS(t) dt$$
 
 # %%
@@ -473,7 +516,7 @@ linear_survival_ibs_test = integrated_brier_score(
 print(f"IBS of linear survival estimator on test set: {linear_survival_ibs_test:.3f}")
 
 # %% [markdown]
-# Finally, let's also introduce the concordance index (C-index). This metric evaluates the ranking (or discriminative) power of a model by comparing pairs of individuals having experienced the event. The C-index of a pair $(i, j)$ is maximized when individual $i$ has experienced the event before $j$ and the estimated risk of $i$ is higher than the one of $j$. 
+# Finally, let's also **introduce the concordance index (C-index)**. This metric evaluates the ranking (or discriminative) power of a model by comparing pairs of individuals having experienced the event. The C-index of a pair $(i, j)$ is maximized when individual $i$ has experienced the event before $j$ and the estimated risk of $i$ is higher than the one of $j$. 
 #
 # This metric is also comprised between 0 and 1 (higher is better), 0.5 corresponds to a random prediction.
 #
@@ -611,7 +654,7 @@ evaluator.metrics_table()
 #
 # We now introduce some quantities which are going to be at the core of many survival analysis models.
 #
-# The most important concept is the hazard rate $\lambda(t)$. This quantity represents the "speed of failure" or the probability that an event occurs in the next $dt$, given that it hasn't occured yet. This can be written as:
+# The most important concept is the hazard rate $\lambda(t)$. This quantity represents the "speed of failure" or **the probability that an event occurs in the next $dt$, given that it hasn't occured yet**. This can be written as:
 #
 # $$\begin{align}
 # \lambda(t) &=\lim_{dt\rightarrow 0}\frac{P(t \leq T < t + dt | P(T \geq t))}{dt} \\
@@ -621,9 +664,9 @@ evaluator.metrics_table()
 # $$
 #
 # where $f(t)$ represents the probability density. This quantity estimates the probability that an event occurs in the next $dt$, independently of this event having happened before. <br>
-# If we integrate $f(t)$, we found the cumulative incidence function (CIF) $F(t)=P(T < t)$, which is the opposite of the survival function $S(t)$:
+# If we integrate $f(t)$, we found the cumulative incidence function (CIF) $F(t)=P(T < t)$, which is the complement of the survival function $S(t)$:
 #
-# $$F(t)=\int^\infty_0f(t)dt=1-S(t)$$
+# $$F(t) = 1 - S(t) = \int^\infty_0f(t)dt$$
 
 # %% [markdown]
 # ### IV.1 Cox Proportional Hazards
@@ -664,8 +707,8 @@ cox_ph_survival_funcs = cox_ph_pipeline.predict_survival_function(X_test)
 
 fig, ax = plt.subplots()
 for idx, cox_ph_survival_func in enumerate(cox_ph_survival_funcs[:5]):
-    survival_probs = cox_ph_survival_func(time_grid)
-    ax.plot(time_grid, survival_probs, label=idx)
+    survival_curve = cox_ph_survival_func(time_grid)
+    ax.plot(time_grid, survival_curve, label=idx)
 ax.set(
     title="Survival probabilities $\hat{S(t)}$ of CoxPH",
     xlabel="time (days)",
@@ -1083,7 +1126,7 @@ for event in competing_risk_ids:
         total_cif += cif_df[cif_df.columns[0]].values
 
 ax.plot(cif_times, total_cif, label="total", linestyle="--", color="black")
-ax.set(title="CIFs from Aalen Johansen", xlabel="time (days)")
+ax.set(title="Mean CIFs estimated by Aalen-Johansen", xlabel="time (days)")
 plt.legend();
 
 # %% [markdown]
@@ -1113,7 +1156,7 @@ for k in competing_risk_ids:
     )
     gb_cif_k = PipelineWrapper(gb_cif_k)
     
-    gb_cif_k.fit(X_train, y_cr_train, time_grid)
+    gb_cif_k.fit(X_train_cr, y_cr_train, time_grid)
     cif_curves_k = gb_cif_k.predict_cumulative_incidence(X_test, time_grid)
     
     mean_cif_curve_k = cif_curves_k.mean(axis=0)  # average over test points
@@ -1122,13 +1165,17 @@ for k in competing_risk_ids:
     total_mean_cif += mean_cif_curve_k
 
 ax.plot(time_grid, total_mean_cif, label="total", linestyle="--", color="black")
-ax.set(xlabel="time in days", ylabel="Cumulative Incidence")
+ax.set(
+    title="Mean CIFs estimated by GradientBoostingCIF",
+    xlabel="time in days",
+    ylabel="Cumulative Incidence",
+)
 plt.legend();
 
 # %% [markdown]
 # Let also reuse the any-event survival estimates to check that:
 #
-# $$\hat{S}(t) = 1 - \sum_k \hat{CIF_k}(t)$$
+# $$\hat{S}(t) \approx 1 - \sum_k \hat{CIF_k}(t)$$
 #
 
 # %%
