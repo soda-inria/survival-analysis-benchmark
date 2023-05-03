@@ -208,12 +208,13 @@ fig.update_layout(
 
 
 # %% [markdown]
-# We can read the median time to event directly from this curve, in this case close to 1020 days.
-# Note that since we have censored data, $S(t)$ doesn't reach 0 within our observation window and we have residuals of 30%.
+# We can read the median time to event directly from this curve reading the time at the intersection of the estimate of the survival curve with the 50% failure probility horizontal line.
+#
+# Note that since we have censored data, $\hat{S}(t)$ doesn't reach 0 within our observation window. We would need to extend the observation window to estimate the survival function beyond this limit.
 
 # %% [markdown]
 # ***Exercice*** <br>
-# Based on `times` and `survival_probabilities`, estimate the median survival time.
+# Based on `times` and `km_survival_probabilities`, estimate the median survival time.
 #
 # *Hint: You can use `np.searchsorted` on sorted probabilities in increasing order (reverse order of the natural ordering of survival probabilities*. Alternatively you can "reverse" the estimate of the survival curve using an `scipy.interpolate.interp1d` and take the value at probability 0.5.
 
@@ -248,7 +249,7 @@ def compute_median_survival_time_with_searchsorted(times, survival_probabilities
     increasing_survival_probabilities = survival_probabilities[::-1]
     median_idx = np.searchsorted(increasing_survival_probabilities, 0.50)
     median_survival_time = times[-median_idx]
-    return median_survival_time
+    return median_survival_time.round(decimals=1)
 
 
 compute_median_survival_time_with_searchsorted(times, km_survival_probabilities)
@@ -260,7 +261,7 @@ from scipy.interpolate import interp1d
 def compute_median_survival_time_with_interp1d(times, survival_probabilities):
     """Get the time to a survival proba of 50% via linear interpolation."""
     reverse_survival_func = interp1d(survival_probabilities, times, kind="linear")
-    return reverse_survival_func([0.5])[0]
+    return reverse_survival_func([0.5])[0].round(decimals=1)
 
 
 compute_median_survival_time_with_interp1d(times, km_survival_probabilities)
@@ -269,13 +270,13 @@ compute_median_survival_time_with_interp1d(times, km_survival_probabilities)
 # Here is the true median survival time from the same data without any censoring (generally not avaible in a real life setting).
 
 # %%
-truck_failure_events_uncensored["duration"].median()
+truck_failure_events_uncensored["duration"].median().round(decimals=1)
 
 # %% [markdown]
 # This empirically confirms that the median survival time estimated by post-processing the KM estimation of the survival curve is a much better way to handle censored data than any the two naive approaches we considered in the beginning of this notebook.
 
 # %% [markdown]
-# ### Mathematical break
+# ### II.1 Mathematical break
 #
 # We now introduce some quantities which are going to be at the core of many survival analysis models and Kaplan-Meier in particular.
 #
@@ -324,6 +325,7 @@ theoretical_hazards.shape
 
 # %%
 import matplotlib.pyplot as plt
+import seaborn as sns; sns.set_style("darkgrid")
 
 
 theoretical_cumulated_hazards = theoretical_hazards.cumsum(axis=-1)
@@ -341,9 +343,11 @@ ax.legend();
 
 # %% [markdown]
 # We observe that the Kaplan-Meier estimate is an unbiased estimator of the survival curve defined by the true hazard functions. However we observe that then **KM estimate is no longer defined after the time of the last observed failure** (day 2000 in our case). In this dataset, all events are censored past that date: as a result **the KM survival curve does not reach zero** even when the true curve does. Therefore, it is **not possible to compute the mean survival time from the KM-estimate** alone. One would need to make some further assumptions to extrapolate it if necessary.
+#
+# Furthermore, not all data generating process necessarily need to reach the 0.0 probability. For instance, survival analysis could be used to model a "time to next snow event" in different regions of the world. We can anticipate that it will never snow in some regions of the world in the foreseeable future.
 
 # %% [markdown]
-# ### Kaplan-Meier on subgroups: stratification on columns of `X`
+# ### II.2 Kaplan-Meier on subgroups: stratification on columns of `X`
 
 # %% [markdown]
 # We can enrich our analysis by introducing covariates, that are statistically associated to the events and durations.
@@ -364,8 +368,8 @@ truck_failure_features_and_events
 # ***Exercice***
 #
 # Plot the stratified Kaplan Meier of the brand, i.e. for each different brand:
-# 1. Filter the dataset on this brand using pandas, for instance using the `.query` method of the dataframe;
-# 2. Estimate the survival curve with Kaplan Meier on each brand subset;
+# 1. Filter the dataset on this brand using pandas, for instance by using boolean masking or using the `.query` method of the dataframe;
+# 2. Estimate the survival curve with Kaplan-Meier on each subset;
 # 3. Plot the survival curve for each subset.
 #
 # What are the limits of this method?
@@ -402,12 +406,13 @@ def plot_km_curve_by_brand(df):
         plt.plot(x, y, label=brand)
 
     plt.legend()
+    plt.ylim(-0.01, 1.01)
     plt.title("Survival curves by brand")
     
 plot_km_curve_by_brand(truck_failure_features_and_events)
 
 # %% [markdown]
-# We can observe that drivers of "Cheapz" trucks seem to experiment a higher number of failures in the early days but then the cumulative number of failures for each group seem to become comparable. Very truck seem to operate after 2500 days (~7 years) without having experienced any failure.
+# We can observe that drivers of "Cheapz" trucks seem to experiment a higher number of failures in the early days but then the cumulative number of failures for each group seem to become comparable.
 #
 # The stratified KM method is nice to compare two groups but quickly becomes impracticable as the number of covariate groups grow. We need estimator that can handle covariates.
 
@@ -541,9 +546,6 @@ _, km_brier_scores = brier_score(
 )
 
 # %%
-from matplotlib import pyplot as plt
-import seaborn as sns; sns.set_style("darkgrid")
-
 fig, ax = plt.subplots(figsize=(12, 5))
 ax.plot(time_grid, km_brier_scores, label="KM on test data");
 ax.set(
@@ -766,7 +768,7 @@ for idx, cox_ph_survival_func in enumerate(cox_ph_survival_funcs[:5]):
     survival_curve = cox_ph_survival_func(time_grid)
     ax.plot(time_grid, survival_curve, label=idx)
 ax.set(
-    title="Survival probabilities $\hat{S(t)}$ of CoxPH",
+    title="Survival probabilities $\hat{S(t)}$ of Cox PH",
     xlabel="time (days)",
     ylabel="S(t)",
 )
@@ -1089,9 +1091,9 @@ evaluator("Data generative process", theoretical_survival_curves)
 large_evaluator("Data generative process", theoretical_survival_curves)
 
 # %% [markdown]
-# We observe that our best models are quite close to the theoretical optimum but there is still some slight margin for improvement. It's possible that re-training the same model pipelines with a larger number of training sample could help close that gap.
+# We observe that our best models are quite close to the theoretical optimum but there is still some slight margin for improvement. It's possible that re-training the same model pipelines with even larger number of training data points or better choice of hyperparameters and feature preprocessing could help close that gap.
 #
-# Note that the IBS and C-index values of the theoretical survival curves are far from 0.0 and 1.0 respectively: this is expected because not all the variations of the target `y` can be explained by the values of the columns of `X`: there is still a large irreducible amount of unpredictable "noise" in this data generating process.
+# Note that the IBS and C-index values of the theoretical survival curves are far from 0.0 and 1.0 respectively: this is expected because not all the variations of the target `y` can be explained by the values of the columns of `X`: there is still a large irreducible amount of unpredictable variability (a.k.a. "noise") in this data generating process.
 
 # %% [markdown]
 # Since our estimators are conditional models, it's also interesting to compare the predicted survival curves for a few test samples and contrasting those to the
@@ -1194,9 +1196,9 @@ plt.legend();
 # This un-conditional model helps us identify 3 types of events, having momentum at different times.
 
 # %% [markdown]
-# ## VI. Cumulative incidence function (CIF) using our GradientBoostedCIF
+# ## VI. Conditional competing risks analysis using our GradientBoostedCIF
 #
-# We can now try to estimate the conditional cumulative incidence function using our GradientBoostedCIF.
+# We estimate the conditional cumulative incidence function using our GradientBoostedCIF.
 
 # %%
 y_cr = truck_failure_competing_events
@@ -1248,7 +1250,7 @@ ax.plot(time_grid, total_mean_cif + mean_survival_curve, label="Survival + total
 ax.legend();
 
 # %% [markdown]
-# So we see that our Gradient Boosting CIF estimator seems to be unbiased as the sum of the mean CIF curves then mean any-event survival curve seems to randomly fluctuate around 1.0.
+# So we see that our Gradient Boosting CIF estimator seems to be unbiased as the sum of the mean CIF curves then mean any-event survival curve randomly fluctuates around 1.0.
 
 # %% [markdown]
 # In the second section of this tutorial, we'll study our GradientBoostedCIF in more depth by understanding how to find the median survival probability and compute its feature importance.

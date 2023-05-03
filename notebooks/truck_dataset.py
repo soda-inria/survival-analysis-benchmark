@@ -94,9 +94,9 @@ def sample_driver_truck_pairs(n_datapoints, random_seed=None):
     rng = np.random.RandomState(random_seed)
     df = pd.DataFrame(
         {
-            "driver_skill": rng.uniform(low=0.2, high=1.0, size=n_datapoints),
+            "driver_skill": rng.uniform(low=0.2, high=1.0, size=n_datapoints).round(decimals=1),
             "truck_model": rng.choice(truck_model_names, size=n_datapoints),
-            "usage_rate": sample_usage_weights(n_datapoints, rng),
+            "usage_rate": sample_usage_weights(n_datapoints, rng).round(decimals=2),
         }
     )
     return df
@@ -661,8 +661,14 @@ plot_stacked_occurrences(truck_failure_100k_events)
 # +
 from pandas.testing import assert_frame_equal
 
-assert_frame_equal(truck_failure_100k[observed_variables].iloc[:10_000].reset_index(drop=True), truck_failure_10k[observed_variables].reset_index(drop=True))
-assert_frame_equal(truck_failure_100k[observed_variables].iloc[:10_000].reset_index(drop=True), truck_failure_10k[observed_variables].reset_index(drop=True))
+assert_frame_equal(
+    truck_failure_100k[observed_variables].iloc[:10_000].reset_index(drop=True),
+    truck_failure_10k[observed_variables].reset_index(drop=True),
+)
+assert_frame_equal(
+    truck_failure_100k[observed_variables].iloc[:10_000].reset_index(drop=True),
+    truck_failure_10k[observed_variables].reset_index(drop=True),
+)
 # -
 
 truck_failure_100k[observed_variables].to_parquet("truck_failure_100k_features.parquet", index=False)
