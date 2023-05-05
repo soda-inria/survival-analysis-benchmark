@@ -658,6 +658,7 @@ class SurvivalAnalysisEvaluator:
         self.time_grid = time_grid
         
     def add_model(self, model_name, survival_curves):
+        survival_curves = np.asarray(survival_curves)
         _, brier_scores = brier_score(
             survival_train=self.y_train,
             survival_test=self.y_test,
@@ -679,6 +680,7 @@ class SurvivalAnalysisEvaluator:
             "brier_scores": brier_scores,
             "ibs": ibs,
             "c_index": c_index,
+            "survival_curves": survival_curves,
         }
 
     def metrics_table(self):
@@ -845,7 +847,6 @@ cox_survival_curves = np.vstack(
         for cox_ph_survival_func in cox_ph_survival_funcs
     ]
 )
-
 evaluator("Cox PH", cox_survival_curves)
 
 # %% [markdown]
@@ -1002,6 +1003,9 @@ y_train_large = truck_failure_100k_any_event[train_large_mask]
 
 large_evaluator = SurvivalAnalysisEvaluator(y_train_large, y_test, time_grid)
 
+# %% [markdown]
+# **Warning**: the following can be quite slow (takes several minutes on a modern laptop). Feel free to skip.
+
 # %%
 # %%time
 poly_cox_ph_pipeline_large = make_pipeline(
@@ -1113,12 +1117,54 @@ for sample_idx, ax in enumerate(axes):
 # %% [markdown]
 # The individual survival functions predicted by the polynomial Cox PH model are always smooth but we can observe that they do now always match the shape of the true survival curve on some test datapoints.
 #
-# We can also observe that the individual survival curves of the Gradient Boosting CIF model **suffer from the constant-piecewise prediction function of the underlying decision trees**. But despite this limitation, this model still yields very good approximation to the true survival curves. In particular they can provide competitive estimates of the median survival time for instance.
+# We can also observe that the individual survival curves of the Gradient Boosting CIF model **suffer from the constant-piecewise prediction function of the underlying decision trees**. But despite this limitation, this model still yields very good approximation to the true survival curves. In particular **they can provide competitive estimates of the median survival time** for instance.
+#
+# Let's check this final asserion by comparing the Mean absolute error for the median survival time estimates for our various estimators. Note that we can only do this because our data is synthetic and we have access to the true median survival time derived from the data generative process.
+
+# %%
+from sklearn.metrics import mean_absolute_error
+
+def quantile_survival_times(times, survival_curves, q=0.5):
+    increasing_survival_curves = survival_curves[:, ::-1]
+    median_indices = np.apply_along_axis(
+        lambda a: a.searchsorted(q), axis=1, arr=increasing_survival_curves
+    )
+    return times[-median_indices]
+
+
+all_metrics = []
+for model_name, info in evaluator.model_data.items():
+    survival_curves = info["survival_curves"]
+    record = {"model_name": model_name}
+    for q in [0.25, 0.5, 0.75]:
+        mae = mean_absolute_error(
+            quantile_survival_times(time_grid, survival_curves, q=q),
+            quantile_survival_times(time_grid, theoretical_survival_curves, q=q),
+        )
+        record[f"MAE for q={np.round(q, 2)}"] = mae.round(3)
+    all_metrics.append(record)
+pd.DataFrame(all_metrics)
+
+# %%
+all_metrics = []
+for model_name, info in large_evaluator.model_data.items():
+    survival_curves = info["survival_curves"]
+    record = {"model_name": model_name}
+    for q in [0.25, 0.5, 0.75]:
+        mae = mean_absolute_error(
+            quantile_survival_times(time_grid, survival_curves, q=q),
+            quantile_survival_times(time_grid, theoretical_survival_curves, q=q),
+        )
+        record[f"MAE for q={np.round(q, 2)}"] = mae.round(3)
+    all_metrics.append(record)
+pd.DataFrame(all_metrics)
 
 # %% [markdown]
-# Other survival models:
+# Before moving on to competing risks, let's just note that we did not cover all conditional survival analysis models in this introductory notebool. Here are other notable alternatives:
 #
-# TODO: mention and link to XGBSE, DeepHit, SurvTrace...
+# - [XGBoost Survival Embeddings](https://loft-br.github.io/xgboost-survival-embeddings/index.html): another way to leverage gradient boosting for survival analysis.
+# - [DeepHit](https://github.com/chl8856/DeepHit): neural network based, typically with good ranking power but not necessarily well calibrated. Can also handle competing risks.
+# - [SurvTRACE](https://github.com/RyanWangZf/SurvTRACE): more recent transformer-based model. Can also handle competing risks.
 
 # %% [markdown]
 # ## V. Unconditional competing risks modeling with Aalen-Johanson
@@ -1246,7 +1292,13 @@ fig, ax = plt.subplots()
 mean_survival_curve = gb_cif_survival_curves.mean(axis=0)
 ax.plot(time_grid, total_mean_cif, label="Total CIF")
 ax.plot(time_grid, mean_survival_curve, label="Any-event survival")
-ax.plot(time_grid, total_mean_cif + mean_survival_curve, label="Survival + total CIF")
+ax.plot(
+    time_grid,
+    total_mean_cif + mean_survival_curve,
+    color="black",
+    linestyle="--",
+    label="Survival + total CIF",
+)
 ax.legend();
 
 # %% [markdown]
