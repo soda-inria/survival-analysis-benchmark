@@ -16,7 +16,8 @@ from model_selection.cross_validation import get_time_grid
 
 class IBSTrainingSampler:
     
-    def __init__(self, y, event_of_interest, sampling_strategy, random_state):
+    def __init__(self, y, event_of_interest, sampling_strategy, random_state,
+                 min_censoring_prob=1e-8):
         self.y = y
         self.event_of_interest = event_of_interest
         self.sampling_strategy = sampling_strategy
@@ -26,6 +27,7 @@ class IBSTrainingSampler:
         # inverse_km has x: [0.01, ..., .99] and y: [0., ..., 820.]
         self.inverse_km = StepFunction(x=km[::-1], y=times[::-1])
         self.max_km, self.min_km = km[0], km[-1]
+        self.min_censoring_prob = min_censoring_prob
     
     def make_sample(self):
         y = self.y 
@@ -42,51 +44,92 @@ class IBSTrainingSampler:
                 f"Sampling strategy must be 'inverse_km' or 'uniform', "
                 f"got {self.sampling_strategy}"
             )
-        
-        k = self.event_of_interest
-        mask_y_k = (y["event"] == k) & (y["duration"] <= times)
-        mask_y_0 = (y["event"] > 0) & (y["duration"] <= times) 
-        mask_y_1 = y["duration"] > times 
-
-        yc = np.zeros(y.shape[0])
-        yc[mask_y_k] = 1
-
+    
+        # TODO: move the repeated following preambule to fit and pass precomputed
+        # y_any_event as argument to the sampler.
         y_any_event = np.empty(
             y.shape[0],
             dtype=[("event", bool), ("duration", float)],
         )
         y_any_event["event"] = (y["event"] > 0)
         y_any_event["duration"] = y["duration"]
-        cens = CensoringDistributionEstimator().fit(y_any_event) 
 
-        # calculate inverse probability of censoring weight at current time point t.
-        prob_cens_t = cens.predict_proba(times)
-        prob_cens_t = np.clip(prob_cens_t, 1e-8, 1)
+        if self.event_of_interest == "any":
+            # Collapse all event types together.
+            y = y_any_event
+            k = 1
+        elif self.event_of_interest > 0:
+            k = self.event_of_interest
+        else:
+            raise ValueError(
+                f"event_of_interest must be a strictly positive integer or 'any', "
+                f"got {self.event_of_interest}"
+            )
 
-        # calculate inverse probability of censoring weights at observed time point
-        prob_cens_y = cens.predict_proba(y["duration"])
-        prob_cens_y = np.clip(prob_cens_y, 1e-8, 1)
+        # Specify the binary classification target for each record in y and each
+        # matching sampled reference time horizon:
+        #
+        # - 1 when event of interest happened before the sampled reference time
+        #   horizon,
+        # 
+        # - 0 otherwise: any other event happening at any time, censored record
+        #   or event of interest happening after the reference time horizon.
+        #
+        #   Note: censored events only contribute (as negative target) when
+        #   their duration is larger than the reference target horizon.
+        #   Otherwise, they are discarded by setting their weight to 0 in the
+        #   following.
+    
+        y_binary = np.zeros(y.shape[0], dtype=np.int32)
+        y_binary[(y["event"] == k) & (y["duration"] <= times)] = 1
 
-        sample_weights = np.where(mask_y_0, 1/prob_cens_y, 0)
-        sample_weights = np.where(mask_y_1, 1/prob_cens_t, sample_weights)
+        # Compute the weights for the contribution to the classification target:
+        #
+        # - positive targets are weighted by the inverse probability of
+        #   censoring at sampled time horizon.
+        #
+        # - negative targets are weighted by the inverse probability at the time
+        #   of the event of the record. As noted before, censored record are
+        #   zero weighted whenever the censoring date is larger than the
+        #   sampled reference time.
 
-        return times.reshape(-1, 1), yc, sample_weights
+        # Estimate the probability of censoring at observed time point
+        censoring_dist = CensoringDistributionEstimator().fit(y_any_event) 
+        censoring_prob_y = censoring_dist.predict_proba(y["duration"])
+        censoring_prob_y = np.clip(censoring_prob_y, self.min_censoring_prob, 1)
+    
+        mask_y_0 = (y["event"] > 0) & (y["duration"] <= times)
+        sample_weights = np.where(mask_y_0, 1 / censoring_prob_y, 0)
+
+        # Estimate the probability of censoring at current time point t.
+        censoring_prob_t = censoring_dist.predict_proba(times)
+        censoring_prob_t = np.clip(censoring_prob_t, self.min_censoring_prob, 1)
+
+        mask_y_1 = y["duration"] > times
+        sample_weights = np.where(mask_y_1, 1 / censoring_prob_t, sample_weights)
+
+        return times.reshape(-1, 1), y_binary, sample_weights
 
 
 class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
-    """Histogram Gradient Boosted Tree to estimate the
-    cause-specific Cumulative Incidence Function (CIF).
+    """GBDT estimator for cause-specific Cumulative Incidence Function (CIF).
+    
+    This internally relies on the histogram-based gradient boosting classifier
+    or regressor implementation of scikit-learn.
 
-    Estimate a cause-specific CIF by computing the
-    Brier Score for the kth cause of failure from _[1].
-    One can obtain the survival probabilities any event
-    by summing all cause-specific cif and computing 1 - sum.
+    Estimate a cause-specific CIF by minimizing the Brier Score for the kth
+    cause of failure from _[1] for randomly sampled reference time horizons
+    concatenated as extra inputs to the underlying HGB binary classification
+    model.
+
+    One can obtain the survival probabilities for any event by summing all
+    cause-specific CIF curves and computing 1 - "sum of CIF curves".
 
     Parameters
     ----------
-    event_of_interest : int, default=1
-        The event to compute the CIF for. 0 always represent
-        the censoring and must not be set.
+    event_of_interest : int or "any" default=1
+        The event to compute the CIF for. 0 always represents
+        censoring and cannot be used as a valid event of interest.
     
     objective : {'ibs', 'inll'}, default='ibs'
         The objective of the model. In practise, both objective yields
@@ -123,6 +166,7 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
         min_samples_leaf=50,
         verbose=False,
         show_progressbar=True,
+        n_time_grid_steps=100,
         random_state=None,
     ):
         self.event_of_interest = event_of_interest
@@ -136,15 +180,33 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
         self.min_samples_leaf = min_samples_leaf
         self.verbose = verbose
         self.show_progressbar = show_progressbar
+        self.n_time_grid_steps = n_time_grid_steps
         self.random_state = random_state
     
     def fit(self, X, y, times=None, validation_data=None):
 
         # TODO: add check_X_y from sksurv
-        monotonic_cst = np.zeros(X.shape[1]+1)
+        monotonic_cst = np.zeros(X.shape[1] + 1)
         monotonic_cst[0] = 1
+        
+        # Prepare the time grid used by default at prediction time.
+        # XXX: do we want to use the `times` fit param here instead if provided?
+        any_event_mask = y["event"] > 0
+        observed_times = y["duration"][any_event_mask]
 
-        self.hgbt_ = self._get_model(monotonic_cst)
+        if observed_times.shape[0] > self.n_time_grid_steps:
+            self.time_grid_ = np.quantile(
+                observed_times,
+                np.linspace(0, 1, num=self.n_time_grid_steps)
+            )
+        else:
+            self.time_grid_ = observed_times
+            self.time_grid_.sort()
+        
+        # XXX: shall we interpolate/subsample a grid instead?
+        # If so, uniform-based or quantile-based?
+
+        self.estimator_ = self._build_base_estimator(monotonic_cst)
 
         data_sampler = IBSTrainingSampler(
             y,
@@ -157,10 +219,10 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
             iterator = tqdm(iterator)
 
         for idx_iter in iterator:
-            times, yc, sample_weight = data_sampler.make_sample()
-            Xt = np.hstack([times, X])
-            self.hgbt_.max_iter += 1
-            self.hgbt_.fit(Xt, yc, sample_weight=sample_weight)
+            sampled_times, yc, sample_weight = data_sampler.make_sample()
+            Xt = np.hstack([sampled_times, X])
+            self.estimator_.max_iter += 1
+            self.estimator_.fit(Xt, yc, sample_weight=sample_weight)
 
             if self.verbose:
                 train_ibs = self.compute_ibs(y, X_val=X)
@@ -168,7 +230,7 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
                 
             if validation_data is not None:
                 X_val, y_val = validation_data
-                val_ibs = self.compute_ibs(y, X_val, y_val)
+                val_ibs = self._compute_ibs(y, X_val, y_val)
                 if self.verbose:
                     msg_ibs += f" -- val ibs: {val_ibs:.6f}"
     
@@ -177,7 +239,7 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
         
         return self
     
-    def compute_ibs(self, y_train, X_val, y_val=None):
+    def _compute_ibs(self, y_train, X_val, y_val=None):
         if y_val is None:
             y_val = y_train
         times_val = get_time_grid(y_train, y_val)
@@ -185,20 +247,22 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
 
         return integrated_brier_score(y_train, y_val, survival_probs, times_val)
     
-    def predict_cumulative_incidence(self, X, times):
+    def predict_cumulative_incidence(self, X, times=None):
         all_y_cif = []
 
-        iterator = times
+        if times is None:
+            times = self.time_grid_
+    
         if self.show_progressbar:
-            iterator = tqdm(iterator)
+            times = tqdm(times)
 
-        for t in iterator:
+        for t in times:
             t = np.full((X.shape[0], 1), t)
-            Xt = np.hstack([t, X])
+            X_with_t = np.hstack([t, X])
             if self.objective == "ibs":
-                y_cif = self.hgbt_.predict(Xt)
+                y_cif = self.estimator_.predict(X_with_t)
             else:
-                y_cif = self.hgbt_.predict_proba(Xt)[:, 1] 
+                y_cif = self.estimator_.predict_proba(X_with_t)[:, 1] 
             all_y_cif.append(y_cif)
         
         cif = np.vstack(all_y_cif).T
@@ -208,7 +272,7 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
 
         return cif
     
-    def predict_survival_function(self, X, times):
+    def predict_survival_function(self, X, times=None):
         """Compute the event specific survival function.
         
         Warning: this metric only makes sense for binary or
@@ -216,9 +280,22 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
         for competitive events, one need to sum every cif from all 
         GradientBoostedCIF estimators.
         """
-        return 1 - self.predict_cumulative_incidence(X, times)
+        return 1 - self.predict_cumulative_incidence(X, times=times)
     
-    def _get_model(self, monotonic_cst):
+    def predict_quantile(self, X, quantile=0.5, times=None):
+        """Estimate the conditional median (or other quantile) time to event
+        
+        Note: this can return np.inf values when the estimated CIF does not
+        reach the `quantile` value at the maximum time horizon observed on
+        the training set.
+        """
+        if times is None:
+            times = self.time_grid_
+        cif_curves = self.predict_cumulative_incidence(X, times)
+        median_idx = np.searchsorted(cif_curves, quantile, axis=1)
+        return times[median_idx]
+
+    def _build_base_estimator(self, monotonic_cst):
 
         if self.objective == "ibs":
             return HistGradientBoostingRegressor(
