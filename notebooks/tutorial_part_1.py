@@ -1153,7 +1153,9 @@ compute_quantile_metrics(evaluator)
 compute_quantile_metrics(large_evaluator)
 
 # %% [markdown]
-# This confirms that the best models identified by IBS computed on a censored test sample are also the best at most accurately modeling the uncensored time-to-event distribution. Furthermore, we see that a small gain in IBS can have a significant impact in terms of MAE.
+# This confirms that the best estimators ranked by IBS computed on a censored test sample are the most accurately modeling the uncensored time-to-event distribution.
+#
+# Furthermore, we observe that a small gain in IBS can have a significant impact in terms of MAE and Gradient Boosting CIF can reduce its prediction error significantly by increasing the size of the training set and simultaneously increasing the number of leaf nodes per tree.
 
 # %% [markdown]
 # Before moving on to competing risks, let's just note that we did not cover all conditional survival analysis models in this introductory notebool. Here are other notable alternatives:
@@ -1165,24 +1167,49 @@ compute_quantile_metrics(large_evaluator)
 # %% [markdown]
 # ## V. Unconditional competing risks modeling with Aalen-Johanson
 #
-# So far, we've been dealing with a single kind of risk: any accident. What if we have different types of accident? This is the point of competing risks modeling. It aims at modeling the probability of incidence for different events, where these probabilities interfer with each other. A truck that had an accident is withdrawn from the fleet, and therefore can't experienced any other ones.
+# So far, we've been dealing with a single kind of risk: any accident. **What if we have different, mutually exclusive types of failure?**
+#
+# This is the point of **competing risks modeling**. It aims at modeling the probability of incidence for different events, where these probabilities interfer with each other. Here we consider that a truck that had an accident is withdrawn from the fleet, and therefore can't experience any other ones.
+#
+
+# %% [markdown]
+# Let's load our dataset another time. Notice that we have 3 types of event (plus the censoring 0). In the previous section, we only considered binary "any events" by applying `event > 0` to our event column.
+
+# %%
+truck_failure_competing_events = pd.read_parquet("truck_failure_10k_competing_risks.parquet")
+truck_failure_competing_events
+
+# %% [markdown]
+# In this dataset, the event identifier mean the following:
+#
+# - 1: manufacturing defect: a failure of a truck that happens as a result of mistakes in the assembly of the components (e.g. loose bolts);
+# - 2: operational failures, e.g. a driving accident;
+# - 3: fatigure induced failures, e.g. an engine breaks after heavy use for a prolongued period of time, despite good assembly and regular maintenance.
+#
+# 0 is still the censoring marker.
+
+# %% [markdown]
+# Instead of estimating a survival function (probability of remaining event free over time), a competing risk analysis model attempts to estimate a **cause-specific cumulative incidence function ($CIF_k$)**:
 #
 # For any event $k \in [1, K]$, the cumulative incidence function of the event $k$ becomes:
 #
 # $$CIF_k = P(T < t, \mathrm{event}=k)$$
 #
-# Aalen-Johanson estimates the CIF for multi-event $k$, by computing the global (any event) survival probabilities and the cause-specific hazards.
+# In the unconditional case, the estimator ignore any side information in $X$ and only models $CIF_k(t)$ from information in $y$: event types and their respective durations (often with censoring).
+#
+# **Aalen-Johanson estimates the CIF for multi-event $k$**, by:
+# - computing the global (any event) survival probabilities using Kaplan-Meier on the one hand,
+# - and the cause-specific hazards hazards on the other hands.
 #
 # <details><summary>Mathematical formulation</summary>
 #     
-# <br>
 # We first compute the cause-specific hazards $\lambda_k$, by simply counting for each individual duration $t_i$ the number of individuals that have experienced the event $k$ at $t_i$ ($d_{i,k}$), and the number of people still at risk at $t_i$ ($n_i$).
 #
 # $$
 # \hat{\lambda}_k(t_i)=\frac{d_{k,i}}{n_i}
 # $$
 #
-# Then, we compute the survival probability any event with Kaplan Meier any event, where we can reused the cause-specific hazards.
+# Then, we compute the survival probability any event with Kaplan-Meier any event, where we can reused the cause-specific hazards.
 #     
 # $$
 # \hat{S}(t)=\prod_{i:t_i\leq t} (1 - \frac{d_i}{n_i})=\prod_{i:t_i\leq t} (1 - \sum_k\hat{\lambda}_{k}(t_i))
@@ -1194,13 +1221,6 @@ compute_quantile_metrics(large_evaluator)
 #     
 #     
 # </details>
-
-# %% [markdown]
-# Let's load our dataset another time. Notice that we have 3 types of event (plus the censoring 0). In the previous section, we only considered binary "any events" by applying `event > 0` to our event column.
-
-# %%
-truck_failure_competing_events = pd.read_parquet("truck_failure_10k_competing_risks.parquet")
-truck_failure_competing_events
 
 # %% [markdown]
 # Let's use lifelines to estimate the ${CIF_k}$ using Aalen-Johanson. We need to indicate which event to fit on, so we'll iteratively fit the model on all events.
@@ -1252,6 +1272,7 @@ time_grid = make_test_time_grid(y_test["duration"])
 total_mean_cif = np.zeros(time_grid.shape[0])
 
 fig, ax = plt.subplots()
+cif_models = {}
 for k in competing_risk_ids:    
     gb_cif_k = make_pipeline(
         simple_preprocessor,
@@ -1268,6 +1289,7 @@ for k in competing_risk_ids:
     ax.plot(time_grid, mean_cif_curve_k, label=f"event {k}")
 
     total_mean_cif += mean_cif_curve_k
+    cif_models[k] = gb_cif_k
 
 ax.plot(time_grid, total_mean_cif, label="total", linestyle="--", color="black")
 ax.set(
