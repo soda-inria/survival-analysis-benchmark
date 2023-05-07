@@ -753,17 +753,17 @@ simple_preprocessor = make_column_transformer(
     (OneHotEncoder(), ["brand", "truck_model"]),
     remainder="passthrough",
 )
-cox_ph_pipeline = make_pipeline(
+cox_ph = make_pipeline(
     simple_preprocessor,
     CoxPHSurvivalAnalysis(alpha=1e-4)
 )
-cox_ph_pipeline.fit(X_train, as_sksurv_recarray(y_train))
+cox_ph.fit(X_train, as_sksurv_recarray(y_train))
 
 # %% [markdown]
 # Let's compute the predicted survival functions for each row of the test set `X_test` and plot the first 5 survival functions:
 
 # %%
-cox_ph_survival_funcs = cox_ph_pipeline.predict_survival_function(X_test)
+cox_ph_survival_funcs = cox_ph.predict_survival_function(X_test)
 
 fig, ax = plt.subplots()
 for idx, cox_ph_survival_func in enumerate(cox_ph_survival_funcs[:5]):
@@ -792,13 +792,13 @@ X_test.head(5).reset_index(drop=True)
 # *Hint*: You can access an element of a pipeline as simply as `pipeline[idx]`.
 
 # %%
-cox_ph_pipeline  # the full pipeline
+cox_ph  # the full pipeline
 
 # %%
-cox_ph_pipeline[0]  # the first step of the pipeline
+cox_ph[0]  # the first step of the pipeline
 
 # %%
-cox_ph_pipeline[1]  # the second step of the pipeline
+cox_ph[1]  # the second step of the pipeline
 
 # %%
 ### Your code here
@@ -817,11 +817,11 @@ weights = []
 # **Solution**
 
 # %%
-feature_names = cox_ph_pipeline[-2].get_feature_names_out()
+feature_names = cox_ph[-2].get_feature_names_out()
 feature_names.tolist()
 
 # %%
-weights = cox_ph_pipeline[-1].coef_
+weights = cox_ph[-1].coef_
 weights
 
 # %%
@@ -902,13 +902,13 @@ spline_preprocessor = make_column_transformer(
     (OneHotEncoder(), ["brand", "truck_model"]),
     (SplineTransformer(), ["driver_skill", "usage_rate"]),
 )
-poly_cox_ph_pipeline = make_pipeline(
+poly_cox_ph = make_pipeline(
     spline_preprocessor,
     Nystroem(kernel="poly", degree=2, n_components=300),
     CoxPHSurvivalAnalysis(alpha=1e-2)
 )
-poly_cox_ph_pipeline.fit(X_train, as_sksurv_recarray(y_train))
-poly_cox_ph_survival_funcs = poly_cox_ph_pipeline.predict_survival_function(X_test)
+poly_cox_ph.fit(X_train, as_sksurv_recarray(y_train))
+poly_cox_ph_survival_funcs = poly_cox_ph.predict_survival_function(X_test)
 
 
 poly_cox_ph_survival_curves = np.vstack(
@@ -1008,21 +1008,21 @@ large_evaluator = SurvivalAnalysisEvaluator(y_train_large, y_test, time_grid)
 
 # %%
 # %%time
-poly_cox_ph_pipeline_large = make_pipeline(
+poly_cox_ph_large = make_pipeline(
     spline_preprocessor,
     Nystroem(kernel="poly", degree=2, n_components=300),
     CoxPHSurvivalAnalysis(alpha=1e-4)
 )
-poly_cox_ph_pipeline_large.fit(X_train_large, as_sksurv_recarray(y_train_large))
-poly_cox_ph_pipeline_large_survival_funcs = poly_cox_ph_pipeline_large.predict_survival_function(X_test)
+poly_cox_ph_large.fit(X_train_large, as_sksurv_recarray(y_train_large))
+poly_cox_ph_large_survival_funcs = poly_cox_ph_large.predict_survival_function(X_test)
 
 
-poly_cox_ph_pipeline_large_survival_curves = np.vstack(
+poly_cox_ph_large_survival_curves = np.vstack(
     [
-        f(time_grid) for f in poly_cox_ph_pipeline_large_survival_funcs
+        f(time_grid) for f in poly_cox_ph_large_survival_funcs
     ]
 )
-large_evaluator("Polynomial Cox PH (larger training set)", poly_cox_ph_pipeline_large_survival_curves)
+large_evaluator("Polynomial Cox PH (larger training set)", poly_cox_ph_large_survival_curves)
 
 # %%
 # %%time
@@ -1084,7 +1084,7 @@ theoretical_survival_curves = np.asarray([
     )(time_grid) for surv_curve in theoretical_survival_curves
 ])
 
-evaluator("Data generative process", theoretical_survival_curves)
+evaluator("Data generating process", theoretical_survival_curves)
 
 # %% [markdown]
 # The fact that the C-index of the Polynomial Cox PH model can some times be larger than the C-index of the theoretical curves is quite unexpected and would deserve further investigation. It could be an artifact of our evaluation on a finite size test set and the use of partially censored test data.
@@ -1092,7 +1092,7 @@ evaluator("Data generative process", theoretical_survival_curves)
 # Let's also compare with the version of the model trained on the large dataset:
 
 # %%
-large_evaluator("Data generative process", theoretical_survival_curves)
+large_evaluator("Data generating process", theoretical_survival_curves)
 
 # %% [markdown]
 # We observe that our best models are quite close to the theoretical optimum but there is still some slight margin for improvement. It's possible that re-training the same model pipelines with even larger number of training data points or better choice of hyperparameters and feature preprocessing could help close that gap.
@@ -1108,7 +1108,7 @@ fig, axes = plt.subplots(nrows=5, sharex=True, figsize=(12, 25))
 
 for sample_idx, ax in enumerate(axes):
     ax.plot(time_grid, gb_cif_large_survival_curves[sample_idx], label="Gradient Boosting CIF")
-    ax.plot(time_grid, poly_cox_ph_pipeline_large_survival_curves[sample_idx], label="Polynomial Cox PH")
+    ax.plot(time_grid, poly_cox_ph_large_survival_curves[sample_idx], label="Polynomial Cox PH")
     ax.plot(time_grid, theoretical_survival_curves[sample_idx], linestyle="--", label="True survival curve")
     ax.plot(time_grid, 0.5 * np.ones_like(time_grid), linestyle="--", color="black", label="50% probability")
     ax.set(ylim=[-.01, 1.01])
@@ -1119,7 +1119,7 @@ for sample_idx, ax in enumerate(axes):
 #
 # We can also observe that the individual survival curves of the Gradient Boosting CIF model **suffer from the constant-piecewise prediction function of the underlying decision trees**. But despite this limitation, this model still yields very good approximation to the true survival curves. In particular **they can provide competitive estimates of the median survival time** for instance.
 #
-# Let's check this final asserion by comparing the Mean absolute error for the median survival time estimates for our various estimators. Note that we can only do this because our data is synthetic and we have access to the true median survival time derived from the data generative process.
+# Let's check this final asserion by comparing the Mean absolute error for the median survival time estimates for our various estimators. Note that we can only do this because our data is synthetic and we have access to the true median survival time derived from the data generating process.
 
 # %%
 from sklearn.metrics import mean_absolute_error
@@ -1156,6 +1156,8 @@ compute_quantile_metrics(large_evaluator)
 # This confirms that the best estimators ranked by IBS computed on a censored test sample are the most accurately modeling the uncensored time-to-event distribution.
 #
 # Furthermore, we observe that a small gain in IBS can have a significant impact in terms of MAE and Gradient Boosting CIF can reduce its prediction error significantly by increasing the size of the training set and simultaneously increasing the number of leaf nodes per tree.
+#
+# This is not the case of the Polynomial Cox PH model which seems to be intrisically limited by its core modeling assumption: the shape of the Cox PH hazard function depends on $t$ but is independent of $X$. If this assumption does not hold, no amount of additional training data will help the estimator reach the optimal IBS.
 
 # %% [markdown]
 # Before moving on to competing risks, let's just note that we did not cover all conditional survival analysis models in this introductory notebool. Here are other notable alternatives:
