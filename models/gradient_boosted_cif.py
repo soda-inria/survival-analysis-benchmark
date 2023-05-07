@@ -113,7 +113,7 @@ class IBSTrainingSampler:
 
 class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
     """GBDT estimator for cause-specific Cumulative Incidence Function (CIF).
-    
+
     This internally relies on the histogram-based gradient boosting classifier
     or regressor implementation of scikit-learn.
 
@@ -127,10 +127,15 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
 
     Parameters
     ----------
-    event_of_interest : int or "any" default=1
+    event_of_interest : int or "any" default="any"
         The event to compute the CIF for. 0 always represents
         censoring and cannot be used as a valid event of interest.
     
+        "any" means that all events are collapsed together and the resulting
+        model can be used for any event survival analysis: the any
+        event survival function can be estimated as the complement of the
+        any event cumulative incidence function.
+
     objective : {'ibs', 'inll'}, default='ibs'
         The objective of the model. In practise, both objective yields
         comparable results.
@@ -155,7 +160,7 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
 
     def __init__(
         self,
-        event_of_interest=1,
+        event_of_interest="any",
         objective="ibs",
         sampling_strategy="uniform",
         n_iter=10,
