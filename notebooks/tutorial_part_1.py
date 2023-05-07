@@ -691,7 +691,7 @@ class SurvivalAnalysisEvaluator:
                 "C-index": info["c_index"],
             }
             for model_name, info in self.model_data.items()
-        ]).round(decimals=3)
+        ]).round(decimals=4)
         
     def plot(self, model_names=None):
         if model_names is None:
@@ -1004,7 +1004,7 @@ y_train_large = truck_failure_100k_any_event[train_large_mask]
 large_evaluator = SurvivalAnalysisEvaluator(y_train_large, y_test, time_grid)
 
 # %% [markdown]
-# **Warning**: the following can be quite slow (takes several minutes on a modern laptop). Feel free to skip.
+# **Warning**: the execution of the following cell takes several minutes on a modern laptop. Feel free to skip.
 
 # %%
 # %%time
@@ -1132,32 +1132,28 @@ def quantile_survival_times(times, survival_curves, q=0.5):
     return times[-median_indices]
 
 
-all_metrics = []
-for model_name, info in evaluator.model_data.items():
-    survival_curves = info["survival_curves"]
-    record = {"model_name": model_name}
-    for q in [0.25, 0.5, 0.75]:
-        mae = mean_absolute_error(
-            quantile_survival_times(time_grid, survival_curves, q=q),
-            quantile_survival_times(time_grid, theoretical_survival_curves, q=q),
-        )
-        record[f"MAE for q={np.round(q, 2)}"] = mae.round(3)
-    all_metrics.append(record)
-pd.DataFrame(all_metrics)
+def compute_quantile_metrics(evaluator):
+    all_metrics = []
+    for model_name, info in evaluator.model_data.items():
+        survival_curves = info["survival_curves"]
+        record = {"Model": model_name}
+        for q in [0.25, 0.5, 0.75]:
+            mae = mean_absolute_error(
+                quantile_survival_times(time_grid, survival_curves, q=q),
+                quantile_survival_times(time_grid, theoretical_survival_curves, q=q),
+            )
+            record[f"MAE for q={np.round(q, 2)}"] = mae.round(3)
+        all_metrics.append(record)
+    return pd.merge(evaluator.metrics_table(), pd.DataFrame(all_metrics))
+
+
+compute_quantile_metrics(evaluator)
 
 # %%
-all_metrics = []
-for model_name, info in large_evaluator.model_data.items():
-    survival_curves = info["survival_curves"]
-    record = {"model_name": model_name}
-    for q in [0.25, 0.5, 0.75]:
-        mae = mean_absolute_error(
-            quantile_survival_times(time_grid, survival_curves, q=q),
-            quantile_survival_times(time_grid, theoretical_survival_curves, q=q),
-        )
-        record[f"MAE for q={np.round(q, 2)}"] = mae.round(3)
-    all_metrics.append(record)
-pd.DataFrame(all_metrics)
+compute_quantile_metrics(large_evaluator)
+
+# %% [markdown]
+# This confirms that the best models identified by IBS computed on a censored test sample are also the best at most accurately modeling the uncensored time-to-event distribution. Furthermore, we see that a small gain in IBS can have a significant impact in terms of MAE.
 
 # %% [markdown]
 # Before moving on to competing risks, let's just note that we did not cover all conditional survival analysis models in this introductory notebool. Here are other notable alternatives:
