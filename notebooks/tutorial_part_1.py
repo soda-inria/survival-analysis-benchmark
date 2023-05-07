@@ -1265,10 +1265,8 @@ plt.legend();
 # We estimate the conditional cumulative incidence function using our GradientBoostedCIF.
 
 # %%
-y_cr = truck_failure_competing_events
-X_train_cr, X_test_cr, y_cr_train, y_cr_test, idx_train, idx_test = train_test_split_within(
-    X, y_cr, np.arange(X.shape[0]), test_size=0.25, random_state=0
-)
+y_train_cr = truck_failure_competing_events.loc[idx_train]
+y_test_cr = truck_failure_competing_events.loc[idx_test]
 
 time_grid = make_test_time_grid(y_test["duration"])
 total_mean_cif = np.zeros(time_grid.shape[0])
@@ -1284,7 +1282,7 @@ for k in competing_risk_ids:
     )
     gb_cif_k = PipelineWrapper(gb_cif_k)
     
-    gb_cif_k.fit(X_train_cr, y_cr_train, time_grid)
+    gb_cif_k.fit(X_train, y_train_cr, time_grid)
     cif_curves_k = gb_cif_k.predict_cumulative_incidence(X_test, time_grid)
     
     mean_cif_curve_k = cif_curves_k.mean(axis=0)  # average over test points
