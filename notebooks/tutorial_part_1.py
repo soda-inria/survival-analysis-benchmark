@@ -16,15 +16,18 @@
 # %% [markdown]
 # # Survival Analysis Tutorial Part 1
 #
-# [I. What is time-censored data?](#I.-What-is-time-censored-data?) <br>
-# [II. Single event survival analysis with Kaplan-Meier](#II.-Single-event-survival-analysis-with-Kaplan-Meier) <br>
-# [III. Calibration using the integrated brier score (IBS)](#III.-Calibration-using-the-integrated-brier-score-(IBS)) <br>
-# [IV. Predictive Survival Analysis](#IV.-Predictive-survival-analysis) <br>
-# [V. Competing risks modeling with Aalen-Johanson](#V.-Competing-risks-modeling-with-Aalen-Johanson) <br>
-# [VI. Cumulative incidence function (CIF) using our GradientBoostedCIF](#VI.-Cumulative-incidence-function-(CIF)-using-our-GradientBoostedCIF) <br>
+# In this tutorial we will introduce:
+#
+# - what is **right-censored time-to-event data** and why naive regression models fail on such data,
+# - **unconditional survival analysis** with the **Kaplan-Meier** estimator,
+# - **predictive survival analysis** with Cox Proportional Hazards, Survival Forests and Gradient Boosting CIF,
+# - how to assess the quality of survival estimators using the Integrated Brier Score and C-index metrics,
+# - (right-censored) competing risks data,
+# - **unconditional competing risks analysis** with the **Aalean-Johansen** estimator,
+# - **predictive competing risks analysis** with gradient boosting CIF.
 
 # %% [markdown]
-# ## I. What is time-censored data?
+# ## I. What is right-censored time-to-event data data?
 #
 # ### I.1 Censoring
 #
@@ -240,9 +243,10 @@ def compute_median_survival_time(times, survival_probabilities):
 compute_median_survival_time(times, km_survival_probabilities)
 
 
-# %%
-### Solution
+# %% [markdown]
+# ***Solution***
 
+# %%
 def compute_median_survival_time_with_searchsorted(times, survival_probabilities):
     """Get the closest time to a survival probability of 50%."""
     # Search sorted needs an array of ascending values:
@@ -440,7 +444,7 @@ plot_km_curve_by_brand(truck_failure_features_and_events)
 #         \frac{(0 - \hat{S}(t | \mathbf{x}_i))^2}{\hat{G}(d_i)} + I(d_i > t)
 #         \frac{(1 - \hat{S}(t | \mathbf{x}_i))^2}{\hat{G}(t)}$$
 #     
-# In the survival analysis context, the Brier Score can be seen as the Mean Squared Error (MSE) between our probability $\hat{S}(t)$ and our target label $\delta_i \in {0, 1}$, weighted by the inverse probability of censoring $\frac{1}{\hat{G}(t)}$. In practice we estimate `\hat{G}(t)` using a variant of the Kaplan-Estimator with swapped event indicator.
+# In the survival analysis context, the Brier Score can be seen as the Mean Squared Error (MSE) between our probability $\hat{S}(t)$ and our target label $\delta_i \in {0, 1}$, weighted by the inverse probability of censoring $\frac{1}{\hat{G}(t)}$. In practice we estimate $\hat{G}(t)$ using a variant of the Kaplan-Estimator with swapped event indicator.
 #
 # - When no event or censoring has happened at $t$ yet, i.e. $I(d_i > t)$, we penalize a low probability of survival with $(1 - \hat{S}(t|\mathbf{x}_i))^2$.
 # - Conversely, when an individual has experienced an event before $t$, i.e. $I(d_i \leq t \land \delta_i = 1)$, we penalize a high probability of survival with $(0 - \hat{S}(t|\mathbf{x}_i))^2$.
@@ -1127,7 +1131,7 @@ large_model_evaluator("Data generating process", theoretical_survival_curves)
 # theoretical survival curves:
 
 # %%
-fig, axes = plt.subplots(nrows=5, sharex=True, figsize=(12, 25))
+fig, axes = plt.subplots(nrows=5, figsize=(12, 22))
 
 for sample_idx, ax in enumerate(axes):
     ax.plot(time_grid, gb_cif_large_survival_curves[sample_idx], label="Gradient Boosting CIF")
@@ -1135,7 +1139,10 @@ for sample_idx, ax in enumerate(axes):
         ax.plot(time_grid, poly_cox_ph_large_survival_curves[sample_idx], label="Polynomial Cox PH")
     ax.plot(time_grid, theoretical_survival_curves[sample_idx], linestyle="--", label="True survival curve")
     ax.plot(time_grid, 0.5 * np.ones_like(time_grid), linestyle="--", color="black", label="50% probability")
-    ax.set(ylim=[-.01, 1.01])
+    ax.set(
+        title=f"Survival curve for truck #{sample_idx}",
+        ylim=[-.01, 1.01],
+    )
     ax.legend()
 
 # %% [markdown]
@@ -1199,14 +1206,14 @@ compute_quantile_metrics(large_model_evaluator)
 #
 
 # %% [markdown]
-# Let's load our dataset another time. Notice that we have 3 types of event (plus the censoring 0). In the previous section, we only considered binary "any events" by applying `event > 0` to our event column.
+# Let's load our dataset another time. Notice that we have 3 types of event (plus the censoring 0):
 
 # %%
 truck_failure_competing_events = pd.read_parquet("truck_failure_10k_competing_risks.parquet")
 truck_failure_competing_events
 
 # %% [markdown]
-# In this dataset, the event identifier mean the following:
+# In this refined variant of the truck failure event data, the event identifiers mean the following:
 #
 # - 1: manufacturing defect: a failure of a truck that happens as a result of mistakes in the assembly of the components (e.g. loose bolts);
 # - 2: operational failures, e.g. a driving accident;
@@ -1224,8 +1231,10 @@ truck_failure_competing_events
 # In the unconditional case, the estimator ignore any side information in $X$ and only models $CIF_k(t)$ from information in $y$: event types and their respective durations (often with censoring).
 #
 # **Aalen-Johanson estimates the CIF for multi-event $k$**, by:
-# - computing the global (any event) survival probabilities using Kaplan-Meier on the one hand,
-# - and the cause-specific hazards hazards on the other hands.
+# - estimating the cause-specific hazards on one hand;
+# - estimating the global (any event) survival probabilities using Kaplan-Meier on the other hand.
+#
+# The two estimates are then combined to produce an estimate of the cause-specific cumulative incidence.
 #
 # <details><summary>Mathematical formulation</summary>
 #     
@@ -1387,13 +1396,14 @@ ax.legend();
 # %% [markdown]
 # So we see that our Gradient Boosting CIF estimator seems to be unbiased as the sum of the mean CIF curves then mean any-event survival curve randomly fluctuates around 1.0.
 #
-# Note: we could attempt to constraint the sum of CIF survival estimates to always sum to 1 by design but this would make it challenging (impossible?) to also constraint the model to yield monotonically increasing CIF curves as implemented in `GradientBoostedCIF`.
+# Note: we could attempt to constrain the total CIF and survival estimates to always sum to 1 by design but this would make it challenging (impossible?) to also constrain the model to yield monotonically increasing CIF curves as implemented in `GradientBoostedCIF`. This is left as future work.
 
 # %% [markdown]
 # TODO:
 #
-# - evaluate cause-specific IBS and C-index and compare to theoretical curves.
+# - evaluate cause-specific IBS and compare to theoretical curves.
 # - study partial dependence plots of base estimators?
 # - study average causal effects for various kinds of interventions on all types of events.
+# - study the calibration of induced fixed-time-horizon binary classifiers.
 
 # %%

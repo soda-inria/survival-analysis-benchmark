@@ -28,17 +28,17 @@ class IBSTrainingSampler:
         self.inverse_km = StepFunction(x=km[::-1], y=times[::-1])
         self.max_km, self.min_km = km[0], km[-1]
         self.min_censoring_prob = min_censoring_prob
+        self.rng = check_random_state(self.random_state)
     
-    def make_sample(self):
-        y = self.y 
-        rng = check_random_state(self.random_state)
-        
+    def draw(self):
+        y = self.y
+
         if self.sampling_strategy == "inverse_km":
-            surv_probs = rng.uniform(self.min_km, self.max_km, y.shape[0])
+            surv_probs = self.rng.uniform(self.min_km, self.max_km, y.shape[0])
             times = self.inverse_km(surv_probs)
         elif self.sampling_strategy == "uniform":
             min_times, max_times = y["duration"].min(), y["duration"].max()
-            times = rng.uniform(min_times, max_times, y.shape[0])
+            times = self.rng.uniform(min_times, max_times, y.shape[0])
         else:
             raise ValueError(
                 f"Sampling strategy must be 'inverse_km' or 'uniform', "
@@ -179,7 +179,6 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
         max_depth=None,
         max_leaf_nodes=31,
         min_samples_leaf=50,
-        verbose=False,
         show_progressbar=True,
         n_time_grid_steps=100,
         time_horizon=None,
@@ -194,7 +193,6 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
         self.max_depth = max_depth
         self.max_leaf_nodes = max_leaf_nodes
         self.min_samples_leaf = min_samples_leaf
-        self.verbose = verbose
         self.show_progressbar = show_progressbar
         self.n_time_grid_steps = n_time_grid_steps
         self.time_horizon = time_horizon
@@ -203,6 +201,11 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
     def fit(self, X, y, times=None, validation_data=None):
 
         # TODO: add check_X_y from sksurv
+        self.event_ids_ = np.unique(y["event"])
+
+        # The time horizon "feature" is concatenated before the features of X
+        # and we constrain the prediction function (that estimates the CIF)
+        # to monotically increase with this first feature.
         monotonic_cst = np.zeros(X.shape[1] + 1)
         monotonic_cst[0] = 1
         
@@ -225,7 +228,7 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
 
         self.estimator_ = self._build_base_estimator(monotonic_cst)
 
-        data_sampler = IBSTrainingSampler(
+        ibs_training_sampler = IBSTrainingSampler(
             y,
             event_of_interest=self.event_of_interest,
             sampling_strategy=self.sampling_strategy,
@@ -236,38 +239,36 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
             iterator = tqdm(iterator)
 
         for idx_iter in iterator:
-            sampled_times, yc, sample_weight = data_sampler.make_sample()
+            (
+                sampled_times,
+                y_binary,
+                sample_weight,
+            ) = ibs_training_sampler.draw()
             Xt = np.hstack([sampled_times, X])
             self.estimator_.max_iter += 1
-            self.estimator_.fit(Xt, yc, sample_weight=sample_weight)
-
-            if self.verbose:
-                train_ibs = self.compute_ibs(y, X_val=X)
-                msg_ibs = f"round {idx_iter+1:03d} -- train ibs: {train_ibs:.6f}"
-    
-            if validation_data is not None:
-                X_val, y_val = validation_data
-                val_ibs = self._compute_ibs(y, X_val, y_val)
-                if self.verbose:
-                    msg_ibs += f" -- val ibs: {val_ibs:.6f}"
-    
-            if self.verbose:
-                print(msg_ibs)
+            self.estimator_.fit(Xt, y_binary, sample_weight=sample_weight)
+            
+            # XXX: implement verbose logging with a version of IBS that
+            # can handle competing risks.
 
         return self
-
-    def _compute_ibs(self, y_train, X_val, y_val=None):
-        if y_val is None:
-            y_val = y_train
-        times_val = get_time_grid(y_train, y_val)
-        survival_probs = self.predict_survival_function(X_val, times_val)
-
-        return integrated_brier_score(y_train, y_val, survival_probs, times_val)
 
     def predict_proba(self, X, time_horizon=None):
         """Estimate the probability of incidence for a specific time horizon.
 
         See the docstring for the `time_horizon` parameter for more details.
+        
+        Returns a 2d array with shape (X.shape[0], 2). The second column holds
+        the cumulative incidence probability and the first column its
+        complement.
+        
+        When `event_of_interest == "any"` the second column therefore holds the
+        sum all individual events cumulative incidece and the first column
+        holds the probability of remaining event free at `time_horizon`, that
+        is, the survival probability.
+        
+        When `event_of_interest != "any"`, the values in the first column do
+        not have an intuitive meaning.
         """
         if time_horizon is None:
             if self.time_horizon is None:
@@ -314,11 +315,21 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
     def predict_survival_function(self, X, times=None):
         """Compute the event specific survival function.
         
-        Warning: this metric only makes sense for binary or
-        single event! To compute the survival function 
-        for competitive events, one need to sum every cif from all 
-        GradientBoostedCIF estimators.
+        Warning: this metric only makes sense when y_train["event"] is binary
+        (single event) or when setting event_of_interest='any'.
         """
+        if (
+            (self.event_ids_ > 0).sum() > 1
+            and self.event_of_interest != "any"
+        ):
+            warnings.warn(
+                f"Values returned by predict_survival_function only make "
+                f"sense when the model is trained with a binary event "
+                f"indicator or when setting event_of_interest='any'. "
+                f"Instead this model was fit on data with event ids "
+                f"{self.event_ids_.tolist()} and with "
+                f"event_of_interest={self.event_of_interest}."
+            )
         return 1 - self.predict_cumulative_incidence(X, times=times)
     
     def predict_quantile(self, X, quantile=0.5, times=None):
@@ -330,9 +341,18 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
         """
         if times is None:
             times = self.time_grid_
-        cif_curves = self.predict_cumulative_incidence(X, times)
-        median_idx = np.searchsorted(cif_curves, quantile, axis=1)
-        return times[median_idx]
+        cif_curves = self.predict_cumulative_incidence(X, times=times)
+        quantile_idx = np.apply_along_axis(
+            lambda a: a.searchsorted(quantile, side='right'), 1, cif_curves
+        )
+        inf_mask = quantile_idx == cif_curves.shape[1]
+        # Change quantile_idx to avoid out-of-bound index in the subsequent
+        # line.
+        quantile_idx[inf_mask] = cif_curves.shape[1] - 1
+        results = times[quantile_idx]
+        # Mark out-of-index results as np.inf
+        results[inf_mask] = np.inf
+        return results
 
     def _build_base_estimator(self, monotonic_cst):
 
