@@ -128,8 +128,9 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
     Parameters
     ----------
     event_of_interest : int or "any" default="any"
-        The event to compute the CIF for. 0 always represents
-        censoring and cannot be used as a valid event of interest.
+        The event to compute the CIF for. When passed as an integer, it should
+        match one of the values observed in `y_train["event"]`. Note: 0 always
+        represents censoring and cannot be used as a valid event of interest.
     
         "any" means that all events are collapsed together and the resulting
         model can be used for any event survival analysis: the any
@@ -139,16 +140,25 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
     objective : {'ibs', 'inll'}, default='ibs'
         The objective of the model. In practise, both objective yields
         comparable results.
-        
+
         - 'ibs' : integrated brier score. Use a `HistGradientBoostedRegressor`
           with the 'squared_error' loss. As we have no guarantee that the regression
           yields a survival function belonging to [0, 1], we clip the probabilities
           to this range.
         - 'inll' : integrated negative log likelihood. Use a
           `HistGradientBoostedClassifier` with 'log_loss' loss.
-    
+
+    time_horizon : float or int, default=None
+        A specific time horizon `t_horizon` to treat the model as a
+        probabilistic classifier to estimate `E[T_k < t_horizon|X]` where `T_k`
+        is a random variable representing the (uncensored) event for the type
+        of interest.
+
+        When specified, the `predict_proba` method returns an estimate of
+        `E[T_k < t_horizon|X]` for each provided realisation of `X`.
+
     TODO: complete the docstring.
-          
+
     References
     ----------
     
@@ -172,6 +182,7 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
         verbose=False,
         show_progressbar=True,
         n_time_grid_steps=100,
+        time_horizon=None,
         random_state=None,
     ):
         self.event_of_interest = event_of_interest
@@ -186,6 +197,7 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
         self.verbose = verbose
         self.show_progressbar = show_progressbar
         self.n_time_grid_steps = n_time_grid_steps
+        self.time_horizon = time_horizon
         self.random_state = random_state
     
     def fit(self, X, y, times=None, validation_data=None):
@@ -232,7 +244,7 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
             if self.verbose:
                 train_ibs = self.compute_ibs(y, X_val=X)
                 msg_ibs = f"round {idx_iter+1:03d} -- train ibs: {train_ibs:.6f}"
-                
+    
             if validation_data is not None:
                 X_val, y_val = validation_data
                 val_ibs = self._compute_ibs(y, X_val, y_val)
@@ -241,9 +253,9 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
     
             if self.verbose:
                 print(msg_ibs)
-        
+
         return self
-    
+
     def _compute_ibs(self, y_train, X_val, y_val=None):
         if y_val is None:
             y_val = y_train
@@ -251,7 +263,29 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
         survival_probs = self.predict_survival_function(X_val, times_val)
 
         return integrated_brier_score(y_train, y_val, survival_probs, times_val)
-    
+
+    def predict_proba(self, X, time_horizon=None):
+        """Estimate the probability of incidence for a specific time horizon.
+
+        See the docstring for the `time_horizon` parameter for more details.
+        """
+        if time_horizon is None:
+            if self.time_horizon is None:
+                raise ValueError(
+                    "The time_horizon parameter is required to use "
+                    f"{self.__class__.__name__} as a classifier."
+                )
+            else:
+                time_horizon = self.time_horizon
+
+        times = np.asarray([time_horizon])
+        cif = self.predict_cumulative_incidence(X, times=times)
+
+        # Reshape to be consistent with the expected shape returned by 
+        # the predict_proba method of scikit-learn binary classifiers.
+        cif = cif.reshape(-1, 1)
+        return np.hstack([1 - cif, cif])
+
     def predict_cumulative_incidence(self, X, times=None):
         all_y_cif = []
 
