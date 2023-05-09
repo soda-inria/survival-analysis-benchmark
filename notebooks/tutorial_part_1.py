@@ -776,20 +776,37 @@ ax.set(
 )
 plt.legend();
 
+# %% [markdown]
+# Those estimated survival curves are predicted for the following test datapoints:
+
 # %%
 X_test.head(5).reset_index(drop=True)
 
 # %% [markdown]
 # We see that predicted survival functions can vary significantly for different test samples.
 #
+# There are two ways to read this plot:
+#
+# First we could consider our **predictive survival analysis model as a probabilistic regressor**: if we want to **consider a specific probability of survival, say 50%**, we can mentally draw an horizontal line at 0.5, and see that:
+#
+# - test data point `#0` has an estimated median survival time around 300 days,
+# - test data point `#1` has an estimated median survival time around 800 days,
+# - test data point `#2` has an estimated median survival time around 450 days...
+#
+# Secondly we could also consider our **predictive survival analysis model as a probabilistic binary classifier**: if we **consider a specific time horizon, say 1000 days**, we can see that:
+#
+# - test data point `#0` has less than a 20% chance to remain event-free at day 1000,
+# - test date point `#3` has around a 50% chance to remain event-free at day 1000...
+#
+#
 # Let's try to get some intuition about the features importance from the first 5 truck-driver pairs and their survival probabilities.
 
 # %% [markdown]
 # ***Exercice***
 #
-# Plot the feature importance $\beta$ of the model (stored under `_coef`) with their names from the `get_feature_names_out()` method of the preprocessor.
+# Find out which features have the strongest positive or negative impact on the predictions of the model by matching the fitted coefficients $\beta$ of the model (stored under `_coef`) with their names from the `get_feature_names_out()` method of the preprocessor.
 #
-# *Hint*: You can access an element of a pipeline as simply as `pipeline[idx]`.
+# *Hint*: You can access each step of a scikit-learn pipeline as simply as `pipeline[step_idx]`.
 
 # %%
 cox_ph  # the full pipeline
@@ -1001,7 +1018,7 @@ train_large_mask[idx_test] = False
 X_train_large = truck_failure_100k_features[train_large_mask]
 y_train_large = truck_failure_100k_any_event[train_large_mask]
 
-large_evaluator = SurvivalAnalysisEvaluator(y_train_large, y_test, time_grid)
+large_model_evaluator = SurvivalAnalysisEvaluator(y_train_large, y_test, time_grid)
 
 # %% [markdown]
 # **Warning**: fitting polynomial Cox PH on the larger training set takes several minutes on a modern laptop. Feel free to skip.
@@ -1025,7 +1042,7 @@ poly_cox_ph_large_survival_curves = None
 #         f(time_grid) for f in poly_cox_ph_large_survival_funcs
 #     ]
 # )
-# large_evaluator("Polynomial Cox PH (larger training set)", poly_cox_ph_large_survival_curves)
+# large_model_evaluator("Polynomial Cox PH (larger training set)", poly_cox_ph_large_survival_curves)
 
 # %% [markdown]
 # Fitting `GradientBoostedCIF` on the larger dataset should take a fraction of a minute on a modern laptop:
@@ -1040,7 +1057,7 @@ gb_cif_large = PipelineWrapper(gb_cif_large)
 gb_cif_large.fit(X_train_large, y_train_large, time_grid)
 gb_cif_large_survival_curves = gb_cif_large.predict_survival_function(X_test, time_grid)
 
-large_evaluator("Gradient Boosting CIF (larger training set)", gb_cif_large_survival_curves)
+large_model_evaluator("Gradient Boosting CIF (larger training set)", gb_cif_large_survival_curves)
 
 # %% [markdown]
 # ### IV.4 Comparing our estimates to the theoretical survival curves
@@ -1098,7 +1115,7 @@ evaluator("Data generating process", theoretical_survival_curves)
 # Let's also compare with the version of the model trained on the large dataset:
 
 # %%
-large_evaluator("Data generating process", theoretical_survival_curves)
+large_model_evaluator("Data generating process", theoretical_survival_curves)
 
 # %% [markdown]
 # We observe that our best models are quite close to the theoretical optimum but there is still some slight margin for improvement. It's possible that re-training the same model pipelines with even larger number of training data points or better choice of hyperparameters and feature preprocessing could help close that gap.
@@ -1149,7 +1166,7 @@ def compute_quantile_metrics(evaluator):
                 quantile_survival_times(time_grid, survival_curves, q=q),
                 quantile_survival_times(time_grid, theoretical_survival_curves, q=q),
             )
-            record[f"MAE for q={np.round(q, 2)}"] = mae.round(3)
+            record[f"MAE for q={np.round(q, 2)}"] = mae.round(1)
         all_metrics.append(record)
     return pd.merge(evaluator.metrics_table(), pd.DataFrame(all_metrics))
 
@@ -1157,7 +1174,7 @@ def compute_quantile_metrics(evaluator):
 compute_quantile_metrics(evaluator)
 
 # %%
-compute_quantile_metrics(large_evaluator)
+compute_quantile_metrics(large_model_evaluator)
 
 # %% [markdown]
 # This confirms that the best estimators ranked by IBS computed on a censored test sample are the most accurately modeling the uncensored time-to-event distribution.
