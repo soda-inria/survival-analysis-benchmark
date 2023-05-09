@@ -1004,31 +1004,37 @@ y_train_large = truck_failure_100k_any_event[train_large_mask]
 large_evaluator = SurvivalAnalysisEvaluator(y_train_large, y_test, time_grid)
 
 # %% [markdown]
-# **Warning**: the execution of the following cell takes several minutes on a modern laptop. Feel free to skip.
+# **Warning**: fitting polynomial Cox PH on the larger training set takes several minutes on a modern laptop. Feel free to skip.
 
 # %%
-# %%time
-poly_cox_ph_large = make_pipeline(
-    spline_preprocessor,
-    Nystroem(kernel="poly", degree=2, n_components=300),
-    CoxPHSurvivalAnalysis(alpha=1e-4)
-)
-poly_cox_ph_large.fit(X_train_large, as_sksurv_recarray(y_train_large))
-poly_cox_ph_large_survival_funcs = poly_cox_ph_large.predict_survival_function(X_test)
+poly_cox_ph_large_survival_curves = None
+
+# %%
+# # %%time
+# poly_cox_ph_large = make_pipeline(
+#     spline_preprocessor,
+#     Nystroem(kernel="poly", degree=2, n_components=300),
+#     CoxPHSurvivalAnalysis(alpha=1e-4)
+# )
+# poly_cox_ph_large.fit(X_train_large, as_sksurv_recarray(y_train_large))
+# poly_cox_ph_large_survival_funcs = poly_cox_ph_large.predict_survival_function(X_test)
 
 
-poly_cox_ph_large_survival_curves = np.vstack(
-    [
-        f(time_grid) for f in poly_cox_ph_large_survival_funcs
-    ]
-)
-large_evaluator("Polynomial Cox PH (larger training set)", poly_cox_ph_large_survival_curves)
+# poly_cox_ph_large_survival_curves = np.vstack(
+#     [
+#         f(time_grid) for f in poly_cox_ph_large_survival_funcs
+#     ]
+# )
+# large_evaluator("Polynomial Cox PH (larger training set)", poly_cox_ph_large_survival_curves)
+
+# %% [markdown]
+# Fitting `GradientBoostedCIF` on the larger dataset should take a fraction of a minute on a modern laptop:
 
 # %%
 # %%time
 gb_cif_large = make_pipeline(
     simple_preprocessor,
-    GradientBoostedCIF(n_iter=100, max_leaf_nodes=31, learning_rate=0.1),
+    GradientBoostedCIF(max_leaf_nodes=31, learning_rate=0.1, n_iter=100),
 )
 gb_cif_large = PipelineWrapper(gb_cif_large)
 gb_cif_large.fit(X_train_large, y_train_large, time_grid)
@@ -1108,7 +1114,8 @@ fig, axes = plt.subplots(nrows=5, sharex=True, figsize=(12, 25))
 
 for sample_idx, ax in enumerate(axes):
     ax.plot(time_grid, gb_cif_large_survival_curves[sample_idx], label="Gradient Boosting CIF")
-    ax.plot(time_grid, poly_cox_ph_large_survival_curves[sample_idx], label="Polynomial Cox PH")
+    if poly_cox_ph_large_survival_curves is not None:
+        ax.plot(time_grid, poly_cox_ph_large_survival_curves[sample_idx], label="Polynomial Cox PH")
     ax.plot(time_grid, theoretical_survival_curves[sample_idx], linestyle="--", label="True survival curve")
     ax.plot(time_grid, 0.5 * np.ones_like(time_grid), linestyle="--", color="black", label="50% probability")
     ax.set(ylim=[-.01, 1.01])
@@ -1253,49 +1260,90 @@ for event in competing_risk_ids:
         total_cif += cif_df[cif_df.columns[0]].values
 
 ax.plot(cif_times, total_cif, label="total", linestyle="--", color="black")
-ax.set(title="Mean CIFs estimated by Aalen-Johansen", xlabel="time (days)")
+ax.set(
+    title="Mean CIFs estimated by Aalen-Johansen",
+    xlabel="time (days)",
+    xlim=(-30, 2030),
+    ylim=(-0.05, 1.05),
+)
 plt.legend();
 
 # %% [markdown]
-# This un-conditional model helps us identify 3 types of events, having momentum at different times.
+# This unconditional model helps us identify 3 types of events, having momentum at different times. As expected:
+#
+# - the incidence of type 1 events (failures caused by manufactoring defects) increase quickly from the start and then quickly plateau: after 1000 days, the estimator expects almost no new type 1 event to occur: all trucks with a manufacturing defect should have failed by that time.
+# - the incidence of type 2 events (failures caused by wrong operation of the truck) constantly accumulate throughout the observation period.
+# - the incidence of type 3 events (fatigure induced failures) is almost null until 500 days and then slowly increase.
+#
+# Note that once a truck as failed from one kind of event (e.g. a manufacturing defect), it is taken out of the pool of trucks under study and can therefore no longer experience any other kind of failures: there are therefore many operational or fatigure induced failures that do no happen because some trucks have previously failed from a competing failure type.
+#
+# Finally, we can observe that, as time progresses, operational and, even more importantly, fatigue induced failures are expected to make all the trucks in the study fail. Therefore, the sum of the cumulative incidence functions is expected to reach 100% in our study in the large time limit.
+#
+# However, since all events beyond 2000 days are censored in our dataset, the Aaelen-Johansen estimator produces truncated incidence curves: it does not attempt to extra polate beyond the maximum event time observed in the data.
 
 # %% [markdown]
 # ## VI. Conditional competing risks analysis using our GradientBoostedCIF
 #
-# We estimate the conditional cumulative incidence function using our GradientBoostedCIF.
+# Let's now estimate the conditional cumulative incidence function using our GradientBoostedCIF: for each type of event $k$, we fit one `GradientBoostedCIF` instance specialized for this kind of event by passing `event_of_interest=k` to the constructor.
 
 # %%
 y_train_cr = truck_failure_competing_events.loc[idx_train]
 y_test_cr = truck_failure_competing_events.loc[idx_test]
 
-time_grid = make_test_time_grid(y_test["duration"])
-total_mean_cif = np.zeros(time_grid.shape[0])
-
-fig, ax = plt.subplots()
 cif_models = {}
 for k in competing_risk_ids:    
     gb_cif_k = make_pipeline(
         simple_preprocessor,
         GradientBoostedCIF(
-            event_of_interest=k, max_leaf_nodes=5, n_iter=50, learning_rate=0.1
+            event_of_interest=k, max_leaf_nodes=5, n_iter=30, learning_rate=0.1
         ),
     )
     gb_cif_k = PipelineWrapper(gb_cif_k)
-    
     gb_cif_k.fit(X_train, y_train_cr, time_grid)
-    cif_curves_k = gb_cif_k.predict_cumulative_incidence(X_test, time_grid)
-    
+    cif_models[k] = gb_cif_k
+
+# %% [markdown]
+# Alternatively we can fit a larger model with the largest version of the same dataset (takes around a minute):
+
+# %%
+# truck_failure_competing_events_large = pd.read_parquet("truck_failure_100k_competing_risks.parquet")
+# y_train_cr_large = truck_failure_competing_events_large.loc[train_large_mask]
+
+# time_grid = make_test_time_grid(y_test["duration"])
+
+
+# cif_models = {}
+# for k in competing_risk_ids:    
+#     gb_cif_k = make_pipeline(
+#         simple_preprocessor,
+#         GradientBoostedCIF(
+#             event_of_interest=k, max_leaf_nodes=31, n_iter=100, learning_rate=0.1
+#         ),
+#     )
+#     gb_cif_k = PipelineWrapper(gb_cif_k)
+#     gb_cif_k.fit(X_train_large, y_train_cr_large, time_grid)
+#     cif_models[k] = gb_cif_k
+
+# %% [markdown]
+# Once fit, we can use this family of model to predict individual CIF predictions for each kind of event. Plotting the average CIF across indiviuals in the test set should recover curves similar to the Aalean-Johansen estimates (in the limit of large training and test data):
+
+# %%
+fig, ax = plt.subplots()
+total_mean_cif = np.zeros(time_grid.shape[0])
+
+for k in competing_risk_ids:
+    cif_curves_k = cif_models[k].predict_cumulative_incidence(X_test, time_grid)
     mean_cif_curve_k = cif_curves_k.mean(axis=0)  # average over test points
     ax.plot(time_grid, mean_cif_curve_k, label=f"event {k}")
-
     total_mean_cif += mean_cif_curve_k
-    cif_models[k] = gb_cif_k
 
 ax.plot(time_grid, total_mean_cif, label="total", linestyle="--", color="black")
 ax.set(
     title="Mean CIFs estimated by GradientBoostingCIF",
     xlabel="time in days",
     ylabel="Cumulative Incidence",
+    xlim=(-30, 2030),
+    ylim=(-0.05, 1.05),
 )
 plt.legend();
 
@@ -1307,7 +1355,7 @@ plt.legend();
 
 # %%
 fig, ax = plt.subplots()
-mean_survival_curve = gb_cif_survival_curves.mean(axis=0)
+mean_survival_curve = gb_cif_large_survival_curves.mean(axis=0)
 ax.plot(time_grid, total_mean_cif, label="Total CIF")
 ax.plot(time_grid, mean_survival_curve, label="Any-event survival")
 ax.plot(
@@ -1321,6 +1369,14 @@ ax.legend();
 
 # %% [markdown]
 # So we see that our Gradient Boosting CIF estimator seems to be unbiased as the sum of the mean CIF curves then mean any-event survival curve randomly fluctuates around 1.0.
+#
+# Note: we could attempt to constraint the sum of CIF survival estimates to always sum to 1 by design but this would make it challenging (impossible?) to also constraint the model to yield monotonically increasing CIF curves as implemented in `GradientBoostedCIF`.
 
 # %% [markdown]
-# In the second section of this tutorial, we'll study our GradientBoostedCIF in more depth by understanding how to find the median survival probability and compute its feature importance.
+# TODO:
+#
+# - evaluate cause-specific IBS and C-index and compare to theoretical curves.
+# - study partial dependence plots of base estimators?
+# - study average causal effects for various kinds of interventions on all types of events.
+
+# %%
