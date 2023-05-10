@@ -2,7 +2,7 @@ import warnings
 import numpy as np
 from tqdm import tqdm
 
-from sklearn.base import BaseEstimator
+from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils.validation import check_random_state
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.ensemble import HistGradientBoostingClassifier
@@ -57,7 +57,7 @@ class IBSTrainingSampler:
         y_train,
         event_of_interest="any",
         random_state=None,
-        min_censoring_prob=1e-8,
+        min_censoring_prob=1e-30,  # XXX: study the effect and set a better default
     ):
         if event_of_interest != "any" and event_of_interest < 1:
             raise ValueError(
@@ -183,7 +183,7 @@ class IBSTrainingSampler:
         return times.reshape(-1, 1), y_binary, sample_weights
 
 
-class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
+class GradientBoostedCIF(BaseEstimator, SurvivalMixin, ClassifierMixin):
     """GBDT estimator for cause-specific Cumulative Incidence Function (CIF).
 
     This internally relies on the histogram-based gradient boosting classifier
@@ -352,6 +352,13 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
             # XXX: implement verbose logging with a version of IBS that
             # can handle competing risks.
 
+        # To be use at a fixed horizon classifier when setting time_horizon.
+        if self.event_of_interest == "any":
+            self.classes_ = np.array(["no_event", "any_event"])
+        else:
+            self.classes_ = np.array(
+                ["other_or_no_event", f"event_{self.event_of_interest}"]
+            )
         return self
 
     def predict_proba(self, X, time_horizon=None):
@@ -375,7 +382,9 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
             if self.time_horizon is None:
                 raise ValueError(
                     "The time_horizon parameter is required to use "
-                    f"{self.__class__.__name__} as a classifier."
+                    f"{self.__class__.__name__} as a classifier. "
+                    "This parameter can either be passed as constructor "
+                    "or method parameter."
                 )
             else:
                 time_horizon = self.time_horizon

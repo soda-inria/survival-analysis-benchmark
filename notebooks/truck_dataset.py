@@ -595,6 +595,40 @@ def plot_cumulative_incidence_functions(event_frame, all_hazards):
 plot_cumulative_incidence_functions(truck_failure_10k_events, truck_failure_10k_all_hazards)
 # -
 
+# Sanity check for our Brier score computation: it should approximately return the same values irrespective of the censoring for each event type:
+
+import sys; sys.path.append("..")
+
+# +
+from models.gradient_boosted_cif import cif_integrated_brier_score
+
+
+any_event_hazards = truck_failure_10k_all_hazards.sum(axis=0)
+true_survival = np.exp(-any_event_hazards.cumsum(axis=-1))
+max_time_ibs = int(
+    truck_failure_10k_events.query("event > 0")["duration"].max()
+) - 1
+
+for i, hazards_i in enumerate(truck_failure_10k_all_hazards):
+    k = i + 1
+    true_cif_k = (hazards_i * true_survival).cumsum(axis=-1)
+    ibs_censored = cif_integrated_brier_score(
+        truck_failure_10k_events,
+        truck_failure_10k_events,
+        true_cif_k[:, :max_time_ibs],
+        np.arange(total_days)[:max_time_ibs],
+        event_of_interest=k,
+    )
+    ibs_uncensored = cif_integrated_brier_score(
+        truck_failure_10k_events_uncensored,
+        truck_failure_10k_events_uncensored,
+        true_cif_k[:, :max_time_ibs],
+        np.arange(total_days)[:max_time_ibs],
+        event_of_interest=k,
+    )
+    print(f"IBS for event {k}: censored {ibs_censored:.4f}, uncensored {ibs_uncensored:.4f}")
+# -
+
 # If all is well, let's save this dataset to disk:
 
 # +

@@ -27,9 +27,9 @@
 # - **predictive competing risks analysis** with gradient boosting CIF.
 
 # %% [markdown]
-# ## I. What is right-censored time-to-event data data?
+# ## What is right-censored time-to-event data data?
 #
-# ### I.1 Censoring
+# ### Censoring
 #
 # Survival analysis is a time-to-event regression problem, with censored data. We call censored all individuals that didn't experience the event during the range of the observation window.
 #
@@ -52,7 +52,7 @@
 #
 # As we will see, for all those application, it is not possible to directly train a machine learning based regression model on such  **right-censored** time-to-event target since we only have a lower bound on the true time to event for some data points. **Naively removing such points from the data would cause the model predictions to be biased**.
 #
-# ### I.2 Our target `y`
+# ### Our target `y`
 #
 # For each individual $i\in[1, N]$, our survival analysis target $y_i$ is comprised of two elements:
 #
@@ -72,7 +72,7 @@ truck_failure_events
 # In this exemple, we study the accident of truck-driver pairs. Censored pairs (when event is 0 or False) haven't had a mechanical failure or an accident during the study.
 
 # %% [markdown]
-# ### I.3 Why is it a problem to train time-to-event regression models?
+# ### Why is it a problem to train time-to-event regression models?
 #
 # Without survival analysis, we have two naive options to deal with right-censored time to event data:
 # - We ignore them, by only keeping events that happened and performing naive regression on them.
@@ -145,7 +145,7 @@ print(
 # Let's start with unconditional estimation of the any event survival curve.
 #
 #
-# ## II. Single event survival analysis with Kaplan Meier
+# ## Unconditional survival analysis with Kaplan Meier
 #
 # We now introduce the survival analysis approach to the problem of estimating the time-to-event from censored data. For now, we ignore any information from $X$ and focus on $y$ only.
 #
@@ -280,7 +280,7 @@ truck_failure_events_uncensored["duration"].median().round(decimals=1)
 # This empirically confirms that the median survival time estimated by post-processing the KM estimation of the survival curve is a much better way to handle censored data than any the two naive approaches we considered in the beginning of this notebook.
 
 # %% [markdown]
-# ### II.1 Mathematical break
+# ### Mathematical break
 #
 # We now introduce some quantities which are going to be at the core of many survival analysis models and Kaplan-Meier in particular.
 #
@@ -351,7 +351,7 @@ ax.legend();
 # Furthermore, not all data generating process necessarily need to reach the 0.0 probability. For instance, survival analysis could be used to model a "time to next snow event" in different regions of the world. We can anticipate that it will never snow in some regions of the world in the foreseeable future.
 
 # %% [markdown]
-# ### II.2 Kaplan-Meier on subgroups: stratification on columns of `X`
+# ### Kaplan-Meier on subgroups: stratification on columns of `X`
 
 # %% [markdown]
 # We can enrich our analysis by introducing covariates, that are statistically associated to the events and durations.
@@ -423,7 +423,7 @@ plot_km_curve_by_brand(truck_failure_features_and_events)
 # %% [markdown]
 # Let's now attempt to quantify how a survival curve estimated on a training set performs on a test set.
 #
-# ## III. Survival model evaluation using the Integrated Brier Score (IBS) and the Concordance Index (C-index)
+# ## Survival model evaluation using the Integrated Brier Score (IBS) and the Concordance Index (C-index)
 
 # %% [markdown]
 # The Brier score and the C-index are measures that **assess the quality of a predicted survival curve** on a finite data sample.
@@ -503,17 +503,20 @@ km_predict = interp1d(
 )
 
 
-def make_test_time_grid(duration, n_steps=300):
+def make_test_time_grid(y_train, n_steps=300):
     """Bound times to the range of duration."""
     # Some survival models can fail to predict near the boundary of the
     # range of durations observed on the training set.
-    span = duration.max() - duration.min()
-    start = duration.min() + span / 20
-    stop = duration.max() - span / 20
+    observed_duration = y_test.query("event > 0")["duration"]
+    
+    # trim 1% of the span, 0.5% on each end:
+    span = observed_duration.max() - observed_duration.min()
+    start = observed_duration.min() + 0.005 * span
+    stop = observed_duration.max() - 0.005 * span
     return np.linspace(start, stop, num=n_steps)
 
 
-time_grid = make_test_time_grid(y_test["duration"])
+time_grid = make_test_time_grid(y_train)
 
 # %% [markdown]
 # Kaplan-Meier is a constant predictor: it always estimates the mean survival curve for all individual in the (training) dataset: the estimated survival curve does not depend on features values of the `X_train` or `X_test` matrices.
@@ -730,10 +733,10 @@ evaluator.metrics_table()
 # %% [markdown]
 # Next, we'll study how to fit survival models that make predictions that depend on the covariates $X$.
 #
-# ## IV. Predictive survival analysis
+# ## Predictive survival analysis
 
 # %% [markdown]
-# ### IV.1 Cox Proportional Hazards
+# ### Cox Proportional Hazards
 #
 # The Cox PH model is the most popular way of dealing with covariates $X$ in survival analysis. It computes a log linear regression on the target $Y = \min(T, C)$, and consists in a baseline term $\lambda_0(t)$ and a covariate term with weights $\beta$.
 # $$\lambda(t, x_i) = \lambda_0(t) \exp(x_i^\top \beta)$$
@@ -756,6 +759,7 @@ from sksurv.linear_model import CoxPHSurvivalAnalysis
 simple_preprocessor = make_column_transformer(
     (OneHotEncoder(), ["brand", "truck_model"]),
     remainder="passthrough",
+    verbose_feature_names_out=False,
 )
 cox_ph = make_pipeline(
     simple_preprocessor,
@@ -922,6 +926,7 @@ from sklearn.kernel_approximation import Nystroem
 spline_preprocessor = make_column_transformer(
     (OneHotEncoder(), ["brand", "truck_model"]),
     (SplineTransformer(), ["driver_skill", "usage_rate"]),
+    verbose_feature_names_out=False,
 )
 poly_cox_ph = make_pipeline(
     spline_preprocessor,
@@ -941,7 +946,7 @@ poly_cox_ph_survival_curves = np.vstack(
 evaluator("Polynomial Cox PH", poly_cox_ph_survival_curves)
 
 # %% [markdown]
-# ### IV.2 Random Survival Forest
+# ### Random Survival Forest
 #
 # Random Survival Forests are non-parametric model that is potentially more expressive than Cox PH. In particular, if we expect that the shape of the time varying hazards are not the same for each individual, tree-based models such as RSF might perform better. In general they also require a large enough training set to avoid overfitting.
 #
@@ -983,7 +988,7 @@ evaluator("Random Survival Forest", rsf_survival_curves)
 # Unfortunately this does not seem to be able to significantly improve upon the Cox PH model as a ranking model.
 
 # %% [markdown]
-# ### IV.3 GradientBoostedCIF
+# ### GradientBoostedCIF
 #
 #
 # We now introduce a novel survival estimator named Gradient Boosting CIF. This estimator is based on the `HistGradientBoostingClassifier` of scikit-learn under the hood. It is named `CIF` because it has the capability to estimate cause-specific Cumulative Incidence Functions in a competing risks setting by minimizing a cause specific IBS objective function.
@@ -1064,7 +1069,7 @@ gb_cif_large_survival_curves = gb_cif_large.predict_survival_function(X_test, ti
 large_model_evaluator("Gradient Boosting CIF (larger training set)", gb_cif_large_survival_curves)
 
 # %% [markdown]
-# ### IV.4 Comparing our estimates to the theoretical survival curves
+# ### Comparing our estimates to the theoretical survival curves
 #
 # Since the dataset is synthetic, we can access the underlying hazard function for each row of `X_test`:
 
@@ -1191,14 +1196,7 @@ compute_quantile_metrics(large_model_evaluator)
 # This is not the case of the Polynomial Cox PH model which seems to be intrisically limited by its core modeling assumption: the shape of the Cox PH hazard function depends on $t$ but is independent of $X$. If this assumption does not hold, no amount of additional training data will help the estimator reach the optimal IBS.
 
 # %% [markdown]
-# Before moving on to competing risks, let's just note that we did not cover all conditional survival analysis models in this introductory notebool. Here are other notable alternatives:
-#
-# - [XGBoost Survival Embeddings](https://loft-br.github.io/xgboost-survival-embeddings/index.html): another way to leverage gradient boosting for survival analysis.
-# - [DeepHit](https://github.com/chl8856/DeepHit): neural network based, typically with good ranking power but not necessarily well calibrated. Can also handle competing risks.
-# - [SurvTRACE](https://github.com/RyanWangZf/SurvTRACE): more recent transformer-based model. Can also handle competing risks.
-
-# %% [markdown]
-# ## V. Unconditional competing risks modeling with Aalen-Johanson
+# ## Unconditional competing risks modeling with Aalen-Johanson
 #
 # So far, we've been dealing with a single kind of risk: any accident. **What if we have different, mutually exclusive types of failure?**
 #
@@ -1308,7 +1306,7 @@ plt.legend();
 # However, since all events beyond 2000 days are censored in our dataset, the Aaelen-Johansen estimator produces truncated incidence curves: it does not attempt to extra polate beyond the maximum event time observed in the data.
 
 # %% [markdown]
-# ## VI. Conditional competing risks analysis using our GradientBoostedCIF
+# ## Predictive competing risks analysis using our GradientBoostedCIF
 #
 # Contrary to predictive survival analysis, the open source ecosystem is not very mature for predictive competing risk analysis.
 #
@@ -1336,9 +1334,6 @@ for k in competing_risk_ids:
 # %%
 # truck_failure_competing_events_large = pd.read_parquet("truck_failure_100k_competing_risks.parquet")
 # y_train_cr_large = truck_failure_competing_events_large.loc[train_large_mask]
-
-# time_grid = make_test_time_grid(y_test["duration"])
-
 
 # cif_models = {}
 # for k in competing_risk_ids:    
@@ -1398,27 +1393,42 @@ ax.plot(
 ax.legend();
 
 # %% [markdown]
-# So we see that our Gradient Boosting CIF estimator seems to be unbiased as the sum of the mean CIF curves then mean any-event survival curve randomly fluctuates around 1.0.
+# So we see that our Gradient Boosting CIF estimator seems to be unbiased as the sum of the mean CIF curves then mean any-event survival curve randomly fluctuates around 1.0. A more careful study would be required to see how the mean and the variance of the sum evolve when changing the size of the training set, the amount of censoring and the hyperparameters of the estimator.
 #
-# Note: we could attempt to constrain the total CIF and survival estimates to always sum to 1 by design but this would make it challenging (impossible?) to also constrain the model to yield monotonically increasing CIF curves as implemented in `GradientBoostedCIF`. This is left as future work.
+# Note: we could also attempt to constrain the total CIF and survival estimates to always sum to 1 by design but this would make it challenging (impossible?) to also constrain the model to yield monotonically increasing CIF curves as implemented in `GradientBoostedCIF`. This is left as future work.
 
 # %% [markdown]
-# Let's compute the theoretical cimulative incidence from the true hazards of the data generating process. We also need to interpolate them to our evaluation time grid:
+# ### Model evaluation with the cause-specific Brier score
+#
+# At this time, neither scikit-survival nor lifelines provide an implementation of time-dependent Brier score adjusted for censoring in a competing risks setting.
+#
+# Let's compute the theoretical cumulative incidence from the true hazards of the data generating process. We start from our theoretical hazards:
 
 # %%
-theoretical_cumulated_incidence_curves = 1 - np.exp(-theoretical_hazards[:, idx_test, :].cumsum(axis=-1))
+theoretical_hazards.shape
+
+# %% [markdown]
+# To derive the theoretical cumulative incidence curves, we need to estimate the true survival functions from the any-event hazards. Then we integrate over time the produce of the cause specific hazards with the any-event survival function to derive the cause-specific cumulative incidence.
+#
+# We also need to interpolate them to our evaluation time grid.
+#
+# Finally we compute the IBS both for the cumulative incidence curves predicted by our `GradientBoostedCIF` models and the curves derived from the the true hazards.
 
 # %%
 from models.gradient_boosted_cif import cif_integrated_brier_score
 
 
+any_event_hazards = theoretical_hazards.sum(axis=0)
+true_survival = np.exp(-any_event_hazards.cumsum(axis=-1))
+
 for k in competing_risk_ids:
     # Compute the integrated 
     gb_cif_ibs_k = cif_integrated_brier_score(
-        y_train,
-        y_test,
+        y_train_cr,
+        y_test_cr,
         gb_cif_cumulative_incidence_curves[k],
         time_grid,
+        event_of_interest=k,
     )
     # Evaluate the interpolated cumulative incidence curve on the same
     # test set:
@@ -1430,13 +1440,14 @@ for k in competing_risk_ids:
             bounds_error=False,
             fill_value="extrapolate",
         )(time_grid)
-        for ci_curve in theoretical_cumulated_incidence_curves[k -1]
+        for ci_curve in (theoretical_hazards[k - 1] * true_survival).cumsum(axis=-1)[idx_test]
     ])
     theoretical_cif_ibs_k = cif_integrated_brier_score(
-        y_train,
-        y_test,
+        y_train_cr,
+        y_test_cr,
         theoretical_cumulated_incidence_curves_k,
         time_grid,
+        event_of_interest=k,
     )
     print(
         f"[event {k}] IBS for GB CIF: {gb_cif_ibs_k:.4f}, "
@@ -1444,10 +1455,90 @@ for k in competing_risk_ids:
     )
 
 # %% [markdown]
-# TODO:
+# By looking at the cause-specific IBS values, it seems that our model is already quite close to the optimal. Again, it's likely that this can be improved by increasing the training set size and tuning the hyper-parameters.
+
+# %% [markdown]
+# ### Model inspection with Partial Dependence Plots (PDP)
 #
-# - study partial dependence plots of base estimators?
-# - study average causal effects for various kinds of interventions on all types of events.
-# - study the calibration of induced fixed-time-horizon binary classifiers.
+# Partial dependence plots make it possible to visualize the impact of an intervention on individual numerical features.
 
 # %%
+cif_models[1].estimator[:-1].get_feature_names_out()
+
+# %%
+from sklearn.inspection import PartialDependenceDisplay
+
+for k in competing_risk_ids:
+    preprocessor_k = cif_models[k].estimator[:-1]
+    classifier_k = cif_models[k].estimator[-1]
+    classifier_k.set_params(time_horizon=1500, show_progressbar=False)
+
+    disp = PartialDependenceDisplay.from_estimator(
+        classifier_k,
+        preprocessor_k.transform(X_test),
+        response_method="predict_proba",
+        features=["driver_skill", "usage_rate"],
+        feature_names=preprocessor_k.get_feature_names_out(),
+    )
+    disp.bounding_ax_.set(title=f"Partial dependence for CIF_{k}")
+    for ax in disp.axes_.ravel():
+        ax.set(ylim=(0, 1))
+
+# %% [markdown]
+# **Analysis**
+#
+# We observe the following:
+#
+# - a `usage_rate` increase seems to have a small yet positive effect on the incidence of events of type 1 and 2;
+# - a `driver_skill` increase seems to cause a dramatic reduction on the incidence of events of type 2 and small positive effect on the incidence of type 1 and 3 events.
+#
+# This last point is a bit counter intuitive. Since we have access to the data generative process, we can check that the `drive_skill` variable has not impact on the type 1 and 3 hazards (manufacturing defects and fatigue induced failures). So the effect we observe on our models must come from the competition between events: trucks with skilled drivers have a higher relative incidence of type 1 and 3 events because they have a dramatic reduction in type 2 events (operational failures), hence have more opportunity to encounter the other kinds of failures. This highlights that competing risks make it even more challenging to interpret the results of such model inspections.
+#
+# Note that, at the time of writing, scikit-learn does not yet provide a user friendly way to study the impact of categorical variables (this will hopefull improve in version 1.3 and later). In particular it would interesting to see if the estimator for type 2 events could successfully model the quadratic interaction between drive skill and truck UX (via the model variable).
+#
+# Finally: **we cannot conclude on causal effects from the PDP of a classifier alone**. Indeed interventions on estimator inputs and measured effects on estimator predictions do not necessarily estimate true causal effects, had we the opportunity to intervene in the real world. **We would need to make additional assumptions** such as the structure of a causal graph that relates the treated input, the other input covariates and the outcome variable and the absence of hidden confounders. Furthermore we would also need to assume independence of the treatment assignment and the other covariates. If not, we try to use more adapted methods such as [doubly robust causal inference](https://matheusfacure.github.io/python-causality-handbook/12-Doubly-Robust-Estimation.html) to adjust for any such dependence.
+
+# %% [markdown]
+# ***Exercise***
+#
+# For each type of event and each datapoint in the test set, predict the time-to-event for a quantile of your choice. 
+#
+# Then compare to the corresponding quantile of the time-to-event derived from the theoretical cumulative incidence curves.
+#
+# *Hint* do you expect quantile choices that yield undefined values? If so, how sensitive are each types of event to the choice of quantile?
+#
+# *Hint* you can reuse the model trained as `cif_models[k]` for the event of type `k`. Those expose a handy `.predict_quantile(X_test, quantile=q)` method if you wish.
+
+# %%
+# compute quantile time-to-event predicted by model
+
+# TODO
+
+# %%
+# measure quantile time-to-event on uncensored data
+
+
+# TODO
+
+# %%
+# compare the predictions with expected values, for instance using the mean absolute error metric
+
+
+# TODO
+
+
+
+
+
+
+# %% [markdown]
+# ## Going further
+#
+# We encourage you to dive deeper in the documentation of the [lifelines](https://lifelines.readthedocs.io) and [scikit-survival](https://scikit-survival.readthedocs.io/) packages.
+#
+# You might be interested in the following notable alternatives not presented in this notebook:
+#
+# - XGBoost has a builtin handling of [survival analysis with censored data](https://xgboost.readthedocs.io/en/stable/tutorials/aft_survival_analysis.html). However it does only provide predictions at fixed time horizons and does not attempt to estimate the full survival function.
+# - [XGBoost Survival Embeddings](https://loft-br.github.io/xgboost-survival-embeddings/index.html): another way to leverage gradient boosting for survival analysis.
+# - [DeepHit](https://github.com/chl8856/DeepHit): neural network based, typically with good ranking power but not necessarily well calibrated. Can also handle competing risks.
+# - [SurvTRACE](https://github.com/RyanWangZf/SurvTRACE): more recent transformer-based model. Can also handle competing risks. We did not yet evaluate how this performs from a calibration point of view (e.g. using cause-specific IBS).
