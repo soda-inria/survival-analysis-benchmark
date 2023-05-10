@@ -90,15 +90,15 @@ class IBSTrainingSampler:
 
     def _ibs_components(self, y, times, censoring_prob_y=None):
         if self.event_of_interest == "any":
-            # y should be provided as binary indicator
+            # y should already be provided as binary indicator
             k = 1
         else:
             k = self.event_of_interest
 
-        # Specify the binary classification target for each record in y and each
-        # matching sampled reference time horizon:
+        # Specify the binary classification target for each record in y and
+        # a reference time horizon:
         #
-        # - 1 when event of interest happened before the sampled reference time
+        # - 1 when event of interest was observed before the reference time
         #   horizon,
         #
         # - 0 otherwise: any other event happening at any time, censored record
@@ -108,34 +108,37 @@ class IBSTrainingSampler:
         #   their duration is larger than the reference target horizon.
         #   Otherwise, they are discarded by setting their weight to 0 in the
         #   following.
-    
+
         y_binary = np.zeros(y.shape[0], dtype=np.int32)
         y_binary[(y["event"] == k) & (y["duration"] <= times)] = 1
 
-        # Compute the weights for the contribution to the classification target:
+        # Compute the weights for each term contributing to the Brier score
+        # at the specified time horizons.
         #
-        # - positive targets are weighted by the inverse probability of
-        #   censoring at sampled time horizon.
+        # - error of a prediction for a time horizon before the occurence of an
+        #   event (either censored or uncensored) is weighted by the inverse
+        #   probability of censoring at that time horizon.
         #
-        # - negative targets are weighted by the inverse probability at the time
-        #   of the event of the record. As noted before, censored record are
-        #   zero weighted whenever the censoring date is larger than the
-        #   sampled reference time.
-
-        mask_y_0 = (y["event"] > 0) & (y["duration"] <= times)
-        if censoring_prob_y is None:
-            censoring_prob_y = self.censoring_dist.predict_proba(y["duration"])
-            censoring_prob_y = np.clip(censoring_prob_y, self.min_censoring_prob, 1)
-        sample_weights = np.where(mask_y_0, 1 / censoring_prob_y, 0)
+        # - error of a prediction for a time horizon after the any observed event
+        #   is weighted by inverse censoring probability at the actual time
+        #   of the observed event.
+        #
+        # - "error" of a prediction for a time horizon after a censored event has
+        #   0 weight and do not contribute to the Brier score computation.
 
         # Estimate the probability of censoring at current time point t.
         censoring_prob_t = self.censoring_dist.predict_proba(times)
         censoring_prob_t = np.clip(censoring_prob_t, self.min_censoring_prob, 1)
+        before = times < y["duration"]
+        weights = np.where(before, 1 / censoring_prob_t, 0)
 
-        mask_y_1 = y["duration"] > times
-        sample_weights = np.where(mask_y_1, 1 / censoring_prob_t, sample_weights)
+        after_any_observed_event = (y["event"] > 0) & (times >= y["duration"])
+        if censoring_prob_y is None:
+            censoring_prob_y = self.censoring_dist.predict_proba(y["duration"])
+            censoring_prob_y = np.clip(censoring_prob_y, self.min_censoring_prob, 1)
+        weights = np.where(after_any_observed_event, 1 / censoring_prob_y, weights)
 
-        return y_binary, sample_weights
+        return y_binary, weights
 
     def brier_score(self, y_true, y_pred, times):
 
