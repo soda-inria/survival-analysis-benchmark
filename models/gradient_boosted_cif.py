@@ -1,14 +1,15 @@
-from abc import ABC
+import warnings
 import numpy as np
 from tqdm import tqdm
 
 from sklearn.base import BaseEstimator
 from sklearn.utils.validation import check_random_state
-from sklearn.ensemble import HistGradientBoostingRegressor, HistGradientBoostingClassifier
+from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.ensemble import HistGradientBoostingClassifier
 
 from sksurv.functions import StepFunction
-from sksurv.metrics import integrated_brier_score
-from sksurv.nonparametric import kaplan_meier_estimator, CensoringDistributionEstimator
+from sksurv.nonparametric import kaplan_meier_estimator
+from sksurv.nonparametric import CensoringDistributionEstimator
 
 from models.survival_mixin import SurvivalMixin
 from model_selection.cross_validation import get_time_grid
@@ -29,9 +30,37 @@ class IBSTrainingSampler:
         self.max_km, self.min_km = km[0], km[-1]
         self.min_censoring_prob = min_censoring_prob
         self.rng = check_random_state(self.random_state)
-    
+
+        y_any_event = np.empty(
+            y.shape[0],
+            dtype=[("event", bool), ("duration", float)],
+        )
+        y_any_event["event"] = (y["event"] > 0)
+        y_any_event["duration"] = y["duration"]
+
+        if self.event_of_interest == "any":
+            # Collapse all event types together.
+            self.effective_y = y_any_event
+            self.effective_k = 1
+        elif self.event_of_interest > 0:
+            self.effective_y = y
+            self.effective_k = self.event_of_interest
+        else:
+            raise ValueError(
+                f"event_of_interest must be a strictly positive integer or 'any', "
+                f"got {self.event_of_interest}"
+            )
+
+        # Estimate the probability of censoring at observed time point
+        censoring_dist = CensoringDistributionEstimator().fit(y_any_event)
+        censoring_prob_y = censoring_dist.predict_proba(y["duration"])
+        censoring_prob_y = np.clip(censoring_prob_y, self.min_censoring_prob, 1)
+        self.censoring_dist = censoring_dist
+        self.censoring_prob_y = censoring_prob_y
+
     def draw(self):
-        y = self.y
+        y = self.effective_y
+        k = self.effective_k
 
         if self.sampling_strategy == "inverse_km":
             surv_probs = self.rng.uniform(self.min_km, self.max_km, y.shape[0])
@@ -44,34 +73,13 @@ class IBSTrainingSampler:
                 f"Sampling strategy must be 'inverse_km' or 'uniform', "
                 f"got {self.sampling_strategy}"
             )
-    
-        # TODO: move the repeated following preambule to fit and pass precomputed
-        # y_any_event as argument to the sampler.
-        y_any_event = np.empty(
-            y.shape[0],
-            dtype=[("event", bool), ("duration", float)],
-        )
-        y_any_event["event"] = (y["event"] > 0)
-        y_any_event["duration"] = y["duration"]
-
-        if self.event_of_interest == "any":
-            # Collapse all event types together.
-            y = y_any_event
-            k = 1
-        elif self.event_of_interest > 0:
-            k = self.event_of_interest
-        else:
-            raise ValueError(
-                f"event_of_interest must be a strictly positive integer or 'any', "
-                f"got {self.event_of_interest}"
-            )
 
         # Specify the binary classification target for each record in y and each
         # matching sampled reference time horizon:
         #
         # - 1 when event of interest happened before the sampled reference time
         #   horizon,
-        # 
+        #
         # - 0 otherwise: any other event happening at any time, censored record
         #   or event of interest happening after the reference time horizon.
         #
@@ -93,16 +101,11 @@ class IBSTrainingSampler:
         #   zero weighted whenever the censoring date is larger than the
         #   sampled reference time.
 
-        # Estimate the probability of censoring at observed time point
-        censoring_dist = CensoringDistributionEstimator().fit(y_any_event) 
-        censoring_prob_y = censoring_dist.predict_proba(y["duration"])
-        censoring_prob_y = np.clip(censoring_prob_y, self.min_censoring_prob, 1)
-    
         mask_y_0 = (y["event"] > 0) & (y["duration"] <= times)
-        sample_weights = np.where(mask_y_0, 1 / censoring_prob_y, 0)
+        sample_weights = np.where(mask_y_0, 1 / self.censoring_prob_y, 0)
 
         # Estimate the probability of censoring at current time point t.
-        censoring_prob_t = censoring_dist.predict_proba(times)
+        censoring_prob_t = self.censoring_dist.predict_proba(times)
         censoring_prob_t = np.clip(censoring_prob_t, self.min_censoring_prob, 1)
 
         mask_y_1 = y["duration"] > times

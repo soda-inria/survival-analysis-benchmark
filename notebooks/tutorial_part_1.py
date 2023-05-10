@@ -1329,7 +1329,7 @@ for k in competing_risk_ids:
     cif_models[k] = gb_cif_k
 
 # %% [markdown]
-# Alternatively we can fit a larger model with the largest version of the same dataset (takes around a minute):
+# Alternatively we can fit a larger model with the largest version of the same dataset (should take less a minute):
 
 # %%
 # truck_failure_competing_events_large = pd.read_parquet("truck_failure_100k_competing_risks.parquet")
@@ -1405,5 +1405,3 @@ ax.legend();
 # - study partial dependence plots of base estimators?
 # - study average causal effects for various kinds of interventions on all types of events.
 # - study the calibration of induced fixed-time-horizon binary classifiers.
-
-# %%
