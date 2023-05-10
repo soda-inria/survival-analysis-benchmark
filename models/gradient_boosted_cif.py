@@ -15,12 +15,46 @@ from models.survival_mixin import SurvivalMixin
 from model_selection.cross_validation import get_time_grid
 
 
+def cif_brier_score(
+    y_train,
+    y_test,
+    cif_pred,
+    times,
+    event_of_interest="any",
+):
+    # XXX: make times an optional kwarg to be compatible with
+    # sksurv.metrics.brier_score?
+    ibsts = IBSTrainingSampler(
+        y_train,
+        event_of_interest=event_of_interest,
+    )
+    return times, ibsts.brier_score(y_test, cif_pred, times)
+
+
+def cif_integrated_brier_score(
+    y_train,
+    y_test,
+    cif_pred,
+    times,
+    event_of_interest="any",
+):
+    times, brier_scores = cif_brier_score(
+        y_train,
+        y_test,
+        cif_pred,
+        times,
+        event_of_interest=event_of_interest,
+    )
+    return np.trapz(brier_scores, times) / (times[-1] - times[0])
+
+
 class IBSTrainingSampler:
-    
+    # XXX: this class can be used both to sample and compute (I)BS terms
+    # we need a better name / separation of concerns.
+
     def __init__(
         self,
         y_train,
-        y_test=None,
         event_of_interest="any",
         random_state=None,
         min_censoring_prob=1e-8,
@@ -30,24 +64,11 @@ class IBSTrainingSampler:
                 f"event_of_interest must be a strictly positive integer or 'any', "
                 f"got: event_of_interest={self.event_of_interest:!r}"
             )
-
-        # If y_test is provided, compute the Brier score terms for y_test,
-        # else compute the Brier score terms for y_train.
-        # In either case, the censoring distribution is always estimated on
-        # on y_train.
-        if y_test is None:
-            self.y_train_any_event = self._any_event(y_train)
-            self.y_test = y_train
-            self.y_test_any_event = self.y_train_any_event
-        else:
-            self.y_train_any_event = self._any_event(y_train)
-            self.y_test = y_test
-            self.y_test_any_event = self._any_event(y_test)
-
         self.y_train = y_train
+        self.y_train_any_event = self._any_event(y_train)
         self.event_of_interest = event_of_interest
-        self.rng = check_random_state(random_state)
         self.min_censoring_prob = min_censoring_prob
+        self.rng = check_random_state(random_state)
 
         # Estimate the censoring distribution from on the training set using Kaplan-Meier.
         self.censoring_dist = CensoringDistributionEstimator().fit(self.y_train_any_event)
@@ -65,14 +86,11 @@ class IBSTrainingSampler:
         )
         y_any_event["event"] = (y["event"] > 0)
         y_any_event["duration"] = y["duration"]
-        # XXX: shall we use a dict of 2 arrays instead?
-        # This would ensure contiguity.
         return y_any_event
 
-    def _ibs_components(self, y, y_any_event, times, censoring_prob_y=None):
+    def _ibs_components(self, y, times, censoring_prob_y=None):
         if self.event_of_interest == "any":
-            # Collapse all event types together.
-            y = y_any_event
+            # y should be provided as binary indicator
             k = 1
         else:
             k = self.event_of_interest
@@ -119,15 +137,43 @@ class IBSTrainingSampler:
 
         return y_binary, sample_weights
 
+    def brier_score(self, y_true, y_pred, times):
+
+        if self.event_of_interest == "any":
+            if y_true is self.y_train:
+                y_true = self.y_train_any_event
+            else:
+                y_true = self._any_event(y_true)
+
+        n_samples = y_true.shape[0]
+        n_time_steps = times.shape[0]
+        brier_scores = np.empty(
+            shape=(n_samples, n_time_steps),
+            dtype=np.float64,
+        )
+        for t_idx, t in enumerate(times):
+            y_true_binary, weights = self._ibs_components(
+                y_true, np.full(shape=n_samples, fill_value=t)
+            )
+            squared_error = (y_true_binary - y_pred[:, t_idx]) ** 2
+            brier_scores[:, t_idx] = weights * squared_error
+
+        return brier_scores.mean(axis=0)
+
     def draw(self):
         # Sample time horizons uniformly on the observed time range:
         min_times = self.y_train["duration"].min()
         max_times = self.y_train["duration"].max()
         times = self.rng.uniform(min_times, max_times, self.y_train.shape[0])
 
+        if self.event_of_interest == "any":
+            # Collapse all event types together.
+            y = self.y_train_any_event
+        else:
+            y = self.y_train
+
         y_binary, sample_weights = self._ibs_components(
-            self.y_train,
-            self.y_train_any_event,
+            y,
             times,
             censoring_prob_y=self.censoring_prob_y_train,
         )
@@ -202,7 +248,7 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
         max_leaf_nodes=31,
         min_samples_leaf=50,
         show_progressbar=True,
-        n_time_grid_steps=100,
+        n_time_grid_steps=1000,
         time_horizon=None,
         random_state=None,
     ):
@@ -218,43 +264,74 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
         self.n_time_grid_steps = n_time_grid_steps
         self.time_horizon = time_horizon
         self.random_state = random_state
-    
+
+    def _build_base_estimator(self, monotonic_cst):
+
+        if self.objective == "ibs":
+            return HistGradientBoostingRegressor(
+                loss="squared_error",
+                max_iter=1,
+                warm_start=True,
+                monotonic_cst=monotonic_cst,
+                learning_rate=self.learning_rate,
+                max_depth=self.max_depth,
+                max_leaf_nodes=self.max_leaf_nodes,
+                min_samples_leaf=self.min_samples_leaf,
+            )
+        elif self.objective == "inll":
+            return HistGradientBoostingClassifier(
+                loss="log_loss",
+                max_iter=1,
+                warm_start=True,
+                monotonic_cst=monotonic_cst,
+                learning_rate=self.learning_rate,
+                max_leaf_nodes=self.max_leaf_nodes,
+                max_depth=self.max_depth,
+                min_samples_leaf=self.min_samples_leaf,
+            )
+        else:
+            raise ValueError(
+                "Parameter 'objective' must be either 'ibs' or 'inll', "
+                f"got {self.objective}."
+            )
+        
     def fit(self, X, y, times=None, validation_data=None):
 
         # TODO: add check_X_y from sksurv
         self.event_ids_ = np.unique(y["event"])
+        
 
-        # The time horizon "feature" is concatenated before the features of X
-        # and we constrain the prediction function (that estimates the CIF)
-        # to monotically increase with this first feature.
+        # The time horizon is concatenated as an additional input feature
+        # before the features of X and we constrain the prediction function
+        # (that estimates the CIF) to monotically increase with the time
+        # horizon feature.
         monotonic_cst = np.zeros(X.shape[1] + 1)
         monotonic_cst[0] = 1
 
-        # Prepare the time grid used by default at prediction time.
-        if times is None:
-            any_event_mask = y["event"] > 0
-            observed_times = y["duration"][any_event_mask]
+        self.estimator_ = self._build_base_estimator(monotonic_cst)
 
+        # Compute the time grid used at prediction time.
+        any_event_mask = y["event"] > 0
+        observed_times = y["duration"][any_event_mask]
+
+        if times is None:
             if observed_times.shape[0] > self.n_time_grid_steps:
                 self.time_grid_ = np.quantile(
                     observed_times,
                     np.linspace(0, 1, num=self.n_time_grid_steps)
                 )
             else:
-                self.time_grid_ = observed_times
+                self.time_grid_ = observed_times.copy()
                 self.time_grid_.sort()
         else:
-            # XXX: shall we interpolate/subsample a grid instead?
-            # If so, uniform-based or quantile-based?
             self.time_grid_ = times
-
-        self.estimator_ = self._build_base_estimator(monotonic_cst)
-
+        
         ibs_training_sampler = IBSTrainingSampler(
             y,
             event_of_interest=self.event_of_interest,
             random_state=self.random_state,
         )
+        
         iterator = range(self.n_iter)
         if self.show_progressbar:
             iterator = tqdm(iterator)
@@ -374,33 +451,3 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
         # Mark out-of-index results as np.inf
         results[inf_mask] = np.inf
         return results
-
-    def _build_base_estimator(self, monotonic_cst):
-
-        if self.objective == "ibs":
-            return HistGradientBoostingRegressor(
-                loss="squared_error",
-                max_iter=1,
-                warm_start=True,
-                monotonic_cst=monotonic_cst,
-                learning_rate=self.learning_rate,
-                max_depth=self.max_depth,
-                max_leaf_nodes=self.max_leaf_nodes,
-                min_samples_leaf=self.min_samples_leaf,
-            )
-        elif self.objective == "inll":
-            return HistGradientBoostingClassifier(
-                loss="log_loss",
-                max_iter=1,
-                warm_start=True,
-                monotonic_cst=monotonic_cst,
-                learning_rate=self.learning_rate,
-                max_leaf_nodes=self.max_leaf_nodes,
-                max_depth=self.max_depth,
-                min_samples_leaf=self.min_samples_leaf,
-            )
-        else:
-            raise ValueError(
-                "Parameter 'objective' must be either 'ibs' or 'inll', "
-                f"got {self.objective}."
-            )

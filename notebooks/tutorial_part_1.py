@@ -1310,7 +1310,9 @@ plt.legend();
 # %% [markdown]
 # ## VI. Conditional competing risks analysis using our GradientBoostedCIF
 #
-# Let's now estimate the conditional cumulative incidence function using our GradientBoostedCIF: for each type of event $k$, we fit one `GradientBoostedCIF` instance specialized for this kind of event by passing `event_of_interest=k` to the constructor.
+# Contrary to predictive survival analysis, the open source ecosystem is not very mature for predictive competing risk analysis.
+#
+# However, `GradientBoostedCIF` was designed in a way to optimize the cause-specific version of IBS: for each type of event $k$, we fit one `GradientBoostedCIF` instance specialized for this kind of event by passing `event_of_interest=k` to the constructor.
 
 # %%
 y_train_cr = truck_failure_competing_events.loc[idx_train]
@@ -1357,8 +1359,10 @@ for k in competing_risk_ids:
 fig, ax = plt.subplots()
 total_mean_cif = np.zeros(time_grid.shape[0])
 
+gb_cif_cumulative_incidence_curves = {}
 for k in competing_risk_ids:
     cif_curves_k = cif_models[k].predict_cumulative_incidence(X_test, time_grid)
+    gb_cif_cumulative_incidence_curves[k] = cif_curves_k
     mean_cif_curve_k = cif_curves_k.mean(axis=0)  # average over test points
     ax.plot(time_grid, mean_cif_curve_k, label=f"event {k}")
     total_mean_cif += mean_cif_curve_k
@@ -1399,9 +1403,51 @@ ax.legend();
 # Note: we could attempt to constrain the total CIF and survival estimates to always sum to 1 by design but this would make it challenging (impossible?) to also constrain the model to yield monotonically increasing CIF curves as implemented in `GradientBoostedCIF`. This is left as future work.
 
 # %% [markdown]
+# Let's compute the theoretical cimulative incidence from the true hazards of the data generating process. We also need to interpolate them to our evaluation time grid:
+
+# %%
+theoretical_cumulated_incidence_curves = 1 - np.exp(-theoretical_hazards[:, idx_test, :].cumsum(axis=-1))
+
+# %%
+from models.gradient_boosted_cif import cif_integrated_brier_score
+
+
+for k in competing_risk_ids:
+    # Compute the integrated 
+    gb_cif_ibs_k = cif_integrated_brier_score(
+        y_train,
+        y_test,
+        gb_cif_cumulative_incidence_curves[k],
+        time_grid,
+    )
+    # Evaluate the interpolated cumulative incidence curve on the same
+    # test set:
+    theoretical_cumulated_incidence_curves_k = np.asarray([
+        interp1d(
+            original_time_range,
+            ci_curve,
+            kind="previous",
+            bounds_error=False,
+            fill_value="extrapolate",
+        )(time_grid)
+        for ci_curve in theoretical_cumulated_incidence_curves[k -1]
+    ])
+    theoretical_cif_ibs_k = cif_integrated_brier_score(
+        y_train,
+        y_test,
+        theoretical_cumulated_incidence_curves_k,
+        time_grid,
+    )
+    print(
+        f"[event {k}] IBS for GB CIF: {gb_cif_ibs_k:.4f}, "
+        f"IBS for True CIF: {theoretical_cif_ibs_k:.4f}"
+    )
+
+# %% [markdown]
 # TODO:
 #
-# - evaluate cause-specific IBS and compare to theoretical curves.
 # - study partial dependence plots of base estimators?
 # - study average causal effects for various kinds of interventions on all types of events.
 # - study the calibration of induced fixed-time-horizon binary classifiers.
+
+# %%
