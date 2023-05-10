@@ -1,5 +1,4 @@
 import numpy as np
-from sksurv.tree.tree import _array_to_step_function
 
 
 class SurvivalMixin:

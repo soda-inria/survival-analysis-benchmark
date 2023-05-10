@@ -22,13 +22,31 @@ class BaseWrapper(ABC, SurvivalMixin):
 
 class PipelineWrapper(BaseWrapper):
     
-    def fit(self, X_train, y_train, times):
+    def fit(self, X_train, y_train, times=None):
         last_est_name = self.estimator.steps[-1][0]
         times_kwargs = {f"{last_est_name}__times": times}
         self.estimator.fit(X_train, y_train, **times_kwargs)
-    
+
     def predict_survival_function(self, X_test, times=None):
-        return self.estimator.predict_survival_function(X_test)
+        return self.estimator.predict_survival_function(X_test, times=times)
+
+    def predict_cumulative_incidence(self, X_test, times=None):
+        transformers = self.estimator[:-1]
+        X_test = transformers.transform(X_test)
+        estimator = self.estimator[-1]
+        return estimator.predict_cumulative_incidence(X_test, times=times)
+
+    def predict_quantile(self, X_test, quantile=0.5, times=None):
+        transformers = self.estimator[:-1]
+        X_test = transformers.transform(X_test)
+        estimator = self.estimator[-1]
+        return estimator.predict_quantile(X_test, quantile=quantile, times=times)
+
+    def predict_proba(self, X_test, time_horizon=None):
+        transformers = self.estimator[:-1]
+        X_test = transformers.transform(X_test)
+        estimator = self.estimator[-1]
+        return estimator.predict_proba(X_test, time_horizon=time_horizon)
 
 
 class SkurvWrapper(BaseWrapper):
