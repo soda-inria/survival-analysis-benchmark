@@ -1321,7 +1321,7 @@ for k in competing_risk_ids:
     gb_cif_k = make_pipeline(
         simple_preprocessor,
         GradientBoostedCIF(
-            event_of_interest=k, max_leaf_nodes=5, n_iter=30, learning_rate=0.1
+            event_of_interest=k, max_leaf_nodes=15, n_iter=50, learning_rate=0.05
         ),
     )
     gb_cif_k = PipelineWrapper(gb_cif_k)
@@ -1373,6 +1373,14 @@ ax.set(
 plt.legend();
 
 # %% [markdown]
+# The average cause-specific cumulative incidence curves seems to mostly agree with the Aalen-Johansen estimate. One can observe some problematic discrepancy though (depending on the choice of the hyper-parameters):
+#
+# - the cumulative incidence of event 1 and 2 do not start at 0 as expected;
+# - the cumulative incidence of event 1 seems to continue growing beyond day 1500 which is not expected either.
+#
+# On aggregate we can therefore expect the total incidence to be over estimated on the edges of the time range.
+
+# %% [markdown]
 # Let also reuse the any-event survival estimates to check that:
 #
 # $$\hat{S}(t) \approx 1 - \sum_k \hat{CIF_k}(t)$$
@@ -1393,7 +1401,9 @@ ax.plot(
 ax.legend();
 
 # %% [markdown]
-# So we see that our Gradient Boosting CIF estimator seems to be unbiased as the sum of the mean CIF curves then mean any-event survival curve randomly fluctuates around 1.0. A more careful study would be required to see how the mean and the variance of the sum evolve when changing the size of the training set, the amount of censoring and the hyperparameters of the estimator.
+# So we see that our Gradient Boosting CIF estimator seems to be mostly unbiased as the sum of the mean CIF curves then mean any-event survival curve randomly fluctuates around 1.0. A more careful study would be required to see how the mean and the variance of the sum evolve when changing the size of the training set, the amount of censoring and the hyperparameters of the estimator.
+#
+# In particular, it's possible that it would be beneficial to tune the hyper-parameters of each cause-specific model indpendently using a validation and early stopping.
 #
 # Note: we could also attempt to constrain the total CIF and survival estimates to always sum to 1 by design but this would make it challenging (impossible?) to also constrain the model to yield monotonically increasing CIF curves as implemented in `GradientBoostedCIF`. This is left as future work.
 
