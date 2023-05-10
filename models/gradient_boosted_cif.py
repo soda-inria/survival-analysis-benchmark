@@ -17,62 +17,65 @@ from model_selection.cross_validation import get_time_grid
 
 class IBSTrainingSampler:
     
-    def __init__(self, y, event_of_interest, sampling_strategy, random_state,
-                 min_censoring_prob=1e-8):
-        self.y = y
-        self.event_of_interest = event_of_interest
-        self.sampling_strategy = sampling_strategy
-        self.random_state = random_state
-        any_event = (y["event"] > 0).astype(bool)
-        times, km = kaplan_meier_estimator(any_event, y["duration"])
-        # inverse_km has x: [0.01, ..., .99] and y: [0., ..., 820.]
-        self.inverse_km = StepFunction(x=km[::-1], y=times[::-1])
-        self.max_km, self.min_km = km[0], km[-1]
-        self.min_censoring_prob = min_censoring_prob
-        self.rng = check_random_state(self.random_state)
+    def __init__(
+        self,
+        y_train,
+        y_test=None,
+        event_of_interest="any",
+        random_state=None,
+        min_censoring_prob=1e-8,
+    ):
+        if event_of_interest != "any" and event_of_interest < 1:
+            raise ValueError(
+                f"event_of_interest must be a strictly positive integer or 'any', "
+                f"got: event_of_interest={self.event_of_interest:!r}"
+            )
 
+        # If y_test is provided, compute the Brier score terms for y_test,
+        # else compute the Brier score terms for y_train.
+        # In either case, the censoring distribution is always estimated on
+        # on y_train.
+        if y_test is None:
+            self.y_train_any_event = self._any_event(y_train)
+            self.y_test = y_train
+            self.y_test_any_event = self.y_train_any_event
+        else:
+            self.y_train_any_event = self._any_event(y_train)
+            self.y_test = y_test
+            self.y_test_any_event = self._any_event(y_test)
+
+        self.y_train = y_train
+        self.event_of_interest = event_of_interest
+        self.rng = check_random_state(random_state)
+        self.min_censoring_prob = min_censoring_prob
+
+        # Estimate the censoring distribution from on the training set using Kaplan-Meier.
+        self.censoring_dist = CensoringDistributionEstimator().fit(self.y_train_any_event)
+        
+        # Precompute the censoring probabilities at the time of the events on the
+        # training set:
+        censoring_prob_y_train = self.censoring_dist.predict_proba(y_train["duration"])
+        censoring_prob_y_train = np.clip(censoring_prob_y_train, self.min_censoring_prob, 1)
+        self.censoring_prob_y_train = censoring_prob_y_train
+
+    def _any_event(self, y):
         y_any_event = np.empty(
             y.shape[0],
             dtype=[("event", bool), ("duration", float)],
         )
         y_any_event["event"] = (y["event"] > 0)
         y_any_event["duration"] = y["duration"]
+        # XXX: shall we use a dict of 2 arrays instead?
+        # This would ensure contiguity.
+        return y_any_event
 
+    def _ibs_components(self, y, y_any_event, times, censoring_prob_y=None):
         if self.event_of_interest == "any":
             # Collapse all event types together.
-            self.effective_y = y_any_event
-            self.effective_k = 1
-        elif self.event_of_interest > 0:
-            self.effective_y = y
-            self.effective_k = self.event_of_interest
+            y = y_any_event
+            k = 1
         else:
-            raise ValueError(
-                f"event_of_interest must be a strictly positive integer or 'any', "
-                f"got {self.event_of_interest}"
-            )
-
-        # Estimate the probability of censoring at observed time point
-        censoring_dist = CensoringDistributionEstimator().fit(y_any_event)
-        censoring_prob_y = censoring_dist.predict_proba(y["duration"])
-        censoring_prob_y = np.clip(censoring_prob_y, self.min_censoring_prob, 1)
-        self.censoring_dist = censoring_dist
-        self.censoring_prob_y = censoring_prob_y
-
-    def draw(self):
-        y = self.effective_y
-        k = self.effective_k
-
-        if self.sampling_strategy == "inverse_km":
-            surv_probs = self.rng.uniform(self.min_km, self.max_km, y.shape[0])
-            times = self.inverse_km(surv_probs)
-        elif self.sampling_strategy == "uniform":
-            min_times, max_times = y["duration"].min(), y["duration"].max()
-            times = self.rng.uniform(min_times, max_times, y.shape[0])
-        else:
-            raise ValueError(
-                f"Sampling strategy must be 'inverse_km' or 'uniform', "
-                f"got {self.sampling_strategy}"
-            )
+            k = self.event_of_interest
 
         # Specify the binary classification target for each record in y and each
         # matching sampled reference time horizon:
@@ -102,7 +105,10 @@ class IBSTrainingSampler:
         #   sampled reference time.
 
         mask_y_0 = (y["event"] > 0) & (y["duration"] <= times)
-        sample_weights = np.where(mask_y_0, 1 / self.censoring_prob_y, 0)
+        if censoring_prob_y is None:
+            censoring_prob_y = self.censoring_dist.predict_proba(y["duration"])
+            censoring_prob_y = np.clip(censoring_prob_y, self.min_censoring_prob, 1)
+        sample_weights = np.where(mask_y_0, 1 / censoring_prob_y, 0)
 
         # Estimate the probability of censoring at current time point t.
         censoring_prob_t = self.censoring_dist.predict_proba(times)
@@ -111,6 +117,20 @@ class IBSTrainingSampler:
         mask_y_1 = y["duration"] > times
         sample_weights = np.where(mask_y_1, 1 / censoring_prob_t, sample_weights)
 
+        return y_binary, sample_weights
+
+    def draw(self):
+        # Sample time horizons uniformly on the observed time range:
+        min_times = self.y_train["duration"].min()
+        max_times = self.y_train["duration"].max()
+        times = self.rng.uniform(min_times, max_times, self.y_train.shape[0])
+
+        y_binary, sample_weights = self._ibs_components(
+            self.y_train,
+            self.y_train_any_event,
+            times,
+            censoring_prob_y=self.censoring_prob_y_train,
+        )
         return times.reshape(-1, 1), y_binary, sample_weights
 
 
@@ -175,7 +195,6 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
         self,
         event_of_interest="any",
         objective="ibs",
-        sampling_strategy="uniform",
         n_iter=10,
         n_repetitions_per_iter=5,
         learning_rate=0.1,
@@ -189,7 +208,6 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
     ):
         self.event_of_interest = event_of_interest
         self.objective = objective
-        self.sampling_strategy = sampling_strategy
         self.n_iter = n_iter
         self.n_repetitions_per_iter = n_repetitions_per_iter # TODO? data augmenting for early iterations
         self.learning_rate = learning_rate
@@ -211,30 +229,30 @@ class GradientBoostedCIF(BaseEstimator, SurvivalMixin):
         # to monotically increase with this first feature.
         monotonic_cst = np.zeros(X.shape[1] + 1)
         monotonic_cst[0] = 1
-        
-        # Prepare the time grid used by default at prediction time.
-        # XXX: do we want to use the `times` fit param here instead if provided?
-        any_event_mask = y["event"] > 0
-        observed_times = y["duration"][any_event_mask]
 
-        if observed_times.shape[0] > self.n_time_grid_steps:
-            self.time_grid_ = np.quantile(
-                observed_times,
-                np.linspace(0, 1, num=self.n_time_grid_steps)
-            )
+        # Prepare the time grid used by default at prediction time.
+        if times is None:
+            any_event_mask = y["event"] > 0
+            observed_times = y["duration"][any_event_mask]
+
+            if observed_times.shape[0] > self.n_time_grid_steps:
+                self.time_grid_ = np.quantile(
+                    observed_times,
+                    np.linspace(0, 1, num=self.n_time_grid_steps)
+                )
+            else:
+                self.time_grid_ = observed_times
+                self.time_grid_.sort()
         else:
-            self.time_grid_ = observed_times
-            self.time_grid_.sort()
-        
-        # XXX: shall we interpolate/subsample a grid instead?
-        # If so, uniform-based or quantile-based?
+            # XXX: shall we interpolate/subsample a grid instead?
+            # If so, uniform-based or quantile-based?
+            self.time_grid_ = times
 
         self.estimator_ = self._build_base_estimator(monotonic_cst)
 
         ibs_training_sampler = IBSTrainingSampler(
             y,
             event_of_interest=self.event_of_interest,
-            sampling_strategy=self.sampling_strategy,
             random_state=self.random_state,
         )
         iterator = range(self.n_iter)
