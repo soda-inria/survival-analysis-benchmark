@@ -7,9 +7,9 @@ This repository is dedicated to the evaluation of predictive survival models on 
 To run the jupytercon-2023 tutorial notebooks, you will need:
 
 ```
-conda create -n jupytercon -c conda-forge python jupyterlab scikit-learn lifelines scikit-survival matplotlib-base plotly seaborn pandas pyarrow ibis-duckdb polars 
+conda create -n jupytercon-survival -c conda-forge python jupyterlab scikit-learn lifelines scikit-survival matplotlib-base plotly seaborn pandas pyarrow ibis-duckdb polars 
 
-conda activate jupytercon
+conda activate jupytercon-survival
 jupyter lab
 ```
 
