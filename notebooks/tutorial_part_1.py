@@ -27,6 +27,19 @@
 # - **predictive competing risks analysis** with gradient boosting CIF.
 
 # %% [markdown]
+# ## Tutorial data
+#
+# To run this tutorial you can either generate or download the truck failure data.
+#
+# To generate the data, open the `truck_data.ipynb` notebook in jupyter lab and click the "run all" (fast forward arrow) button and wait a few minutes. By the end, you should see a bunch of `.parquet` and `.npz` files showing up in the `notebooks` folder.
+#
+# Alternatively, feel free to download a zip archive from:
+#
+# - https://github.com/soda-inria/survival-analysis-benchmark/releases/download/jupytercon-2023-tutorial-data/truck_failure.zip (a bit more than 500 MB).
+#
+# and unzip it in the `notebooks` folder.
+
+# %% [markdown]
 # ## What is right-censored time-to-event data data?
 #
 # ### Censoring
