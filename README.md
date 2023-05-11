@@ -2,8 +2,27 @@
 
 This repository is dedicated to the evaluation of predictive survival models on large-ish datasets.
 
+## Software dependencies
+
+To run the jupytercon-2023 tutorial notebooks, you will need:
+
+```
+conda create -n jupytercon -c conda-forge python jupyterlab scikit-learn lifelines scikit-survival matplotlib-base plotly seaborn pandas pyarrow ibis-duckdb polars 
+
+conda activate jupytercon
+jupyter lab
+```
 
 ## Notebooks
+
+The `notebooks` folder holds the two main notebooks for the jupytercon-2023, namely:
+
+- `tutorial_part_1.ipynb`
+- `tutorial_part_2.ipynb`
+
+and the ancillary notebook used to generate the dataset used in "part 1", namely:
+
+- `truck_dataset.ipynb`
 
 The notebooks display our benchmark results and show how to use our wrappers to cross validate various models.
 
