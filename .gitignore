@@ -141,3 +141,6 @@ dmypy.json
 *.csv
 *.parquet
 *.npz
+
+.DS_Store
+.vscode
