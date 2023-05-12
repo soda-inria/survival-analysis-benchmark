@@ -20,27 +20,27 @@
 #
 # - what is **right-censored time-to-event data** and why naive regression models fail on such data,
 # - **unconditional survival analysis** with the **Kaplan-Meier** estimator,
-# - **predictive survival analysis** with Cox Proportional Hazards, Survival Forests and Gradient Boosting CIF,
+# - **predictive survival analysis** with Cox Proportional Hazards, Survival Forests and Gradient Boosted CIF,
 # - how to assess the quality of survival estimators using the Integrated Brier Score and C-index metrics,
-# - (right-censored) competing risks data,
-# - **unconditional competing risks analysis** with the **Aalean-Johansen** estimator,
-# - **predictive competing risks analysis** with gradient boosting CIF.
+# - what is **right-censored competing risks data**,
+# - **unconditional competing risks analysis** with the **Aalen-Johansen** estimator,
+# - **predictive competing risks analysis** with gradient boosted CIF.
 
 # %% [markdown]
 # ## Tutorial data
 #
-# To run this tutorial you can either generate or download the truck failure data.
+# To run this tutorial you can **either generate or download** the truck failure data.
 #
-# To generate the data, open the `truck_data.ipynb` notebook in jupyter lab and click the "run all" (fast forward arrow) button and wait a few minutes. By the end, you should see a bunch of `.parquet` and `.npz` files showing up in the `notebooks` folder.
+# **To generate the data**, open the `truck_data.ipynb` notebook in jupyter lab and click the "run all" (fast forward arrow) button and wait a few minutes. By the end, you should see a bunch of `.parquet` and `.npz` files showing up in the `notebooks` folder.
 #
-# Alternatively, feel free to download a zip archive from:
+# Alternatively, feel free **to download** a zip archive from:
 #
 # - https://github.com/soda-inria/survival-analysis-benchmark/releases/download/jupytercon-2023-tutorial-data/truck_failure.zip (a bit more than 500 MB).
 #
 # and unzip it in the `notebooks` folder.
 
 # %% [markdown]
-# ## What is right-censored time-to-event data data?
+# ## What is right-censored time-to-event data?
 #
 # ### Censoring
 #
@@ -58,19 +58,21 @@
 # Survival analysis techniques have wide applications:
 #
 # - In the **medical** landscape, events can consist in patients dying of cancer, or on the contrary recovering from some disease.
-# - In **predictive maintenance**, events can model machine failure.
+# - In **predictive maintenance**, events can consist in machine failure.
 # - In **insurance**, we are interesting in modeling the time to next claim for a portfolio of insurance contracts.
-# - In **marketing**, we can consider user churning as events, or we could focus on users becoming premium.
+# - In **marketing**, we can consider user churning as events, or we could focus on users becoming premium (members that choose to pay a subscription after having used the free version of service for a while).
+# - **Economists** my be interesting in modeling the time for unemployed people to find a new job in different context or different kinds of jobs.
 #
 #
-# As we will see, for all those application, it is not possible to directly train a machine learning based regression model on such  **right-censored** time-to-event target since we only have a lower bound on the true time to event for some data points. **Naively removing such points from the data would cause the model predictions to be biased**.
-#
+# As we will see, for all those applications, it is not possible to directly train a machine learning-based regression model on such a **right-censored** time-to-event target since we only have a lower bound on the true time to event for some data points. **Naively removing such points from the dataset would cause the model predictions to be biased**.
+
+# %% [markdown]
 # ### Our target `y`
 #
 # For each individual $i\in[1, N]$, our survival analysis target $y_i$ is comprised of two elements:
 #
-# - The event $\delta_i\in\{0, 1\}$, where $0$ is censoring and $1$ is experiencing the event.
-# - The censored time-to-event $d_i=min(t_{i}, c_i) > 0$, that is the minimum between the date of the experienced event $t_i$ and the censoring date $c_i$. In a real-world setting, we don't have direct access to $t_i$ when $\delta_i=0$.
+# - The event indicator $\delta_i\in\{0, 1\}$, where $0$ marks censoring and $1$ is indicative that the event of interest has actually happened before the end of the observation window.
+# - The censored time-to-event $d_i=min(t_{i}, c_i) > 0$, that is the minimum between the date of the experienced event $t_i$ and the censoring date $c_i$. In a real-world setting, we don't have direct access to $t_i$ when $\delta_i=0$. We can only record $d_i$.
 #
 # Here is how we represent our target:
 
@@ -82,13 +84,13 @@ truck_failure_events = pd.read_parquet("truck_failure_10k_any_event.parquet")
 truck_failure_events
 
 # %% [markdown]
-# In this exemple, we study the accident of truck-driver pairs. Censored pairs (when event is 0 or False) haven't had a mechanical failure or an accident during the study.
+# In this example, we study the accident of truck-driver pairs. Censored pairs (when event is 0 or False) haven't had a mechanical failure or an accident during the study.
 
 # %% [markdown]
 # ### Why is it a problem to train time-to-event regression models?
 #
 # Without survival analysis, we have two naive options to deal with right-censored time to event data:
-# - We ignore them, by only keeping events that happened and performing naive regression on them.
+# - We ignore censorted data points from the dataset, only keep events that happened and perform naive regression on them.
 # - We consider that all censored events happen at the end of our observation window.
 #
 # **Both approaches are wrong and lead to biased results.**
@@ -103,8 +105,9 @@ naive_stats_1 = (
     .apply(["mean", "median"])
 )
 print(
-    f"Biased method 1 - mean: {naive_stats_1['mean']:.2f} days, "
-    f"median: {naive_stats_1['median']:.2f} days"
+    f"Biased method 1 (removing censored points):\n"
+    f"mean: {naive_stats_1['mean']:.1f} days, "
+    f"median: {naive_stats_1['median']:.1f} days"
 )
 
 # %%
@@ -120,14 +123,15 @@ naive_stats_2 = (
     .apply(["mean", "median"])
 )
 print(
-    f"Biased method 2 - mean: {naive_stats_2['mean']:.2f} days, "
-    f"median: {naive_stats_2['median']:.2f} days"
+    f"Biased method 2 (censored events moved to the end of the window):\n"
+    f"mean: {naive_stats_2['mean']:.1f} days, "
+    f"median: {naive_stats_2['median']:.1f} days"
 )
 
 # %% [markdown]
-# Neither naive methods can estimate the true mean and median failure times. In our case, the data comes from a simple truck fleed model and we have access to the uncensored times (we can wait as long as we want to extend the observation period as needed to have all truck fail).
+# In our case, the **data comes from a simple truck fleet simulator** and we have **access to the uncensored times** (we can wait as long as we want to extend the observation period as needed to have all trucks fail).
 #
-# Let's have a look at the true mean and median time-to-failure:
+# Let's have a look at the **true mean and median time-to-failure**:
 
 # %%
 truck_failure_events_uncensored = pd.read_parquet("truck_failure_10k_any_event_uncensored.parquet")
@@ -135,7 +139,8 @@ truck_failure_events_uncensored = pd.read_parquet("truck_failure_10k_any_event_u
 # %%
 true_stats = truck_failure_events_uncensored["duration"].apply(["mean", "median"])
 print(
-    f"Ground truth - mean: {true_stats['mean']:.2f} days, "
+    f"Ground truth (from the simulator):\n"
+    f"mean: {true_stats['mean']:.2f} days, "
     f"median: {true_stats['median']:.2f} days"
 )
 
@@ -158,7 +163,7 @@ print(
 # Let's start with unconditional estimation of the any event survival curve.
 #
 #
-# ## Unconditional survival analysis with Kaplan Meier
+# ## Unconditional survival analysis with Kaplan-Meier
 #
 # We now introduce the survival analysis approach to the problem of estimating the time-to-event from censored data. For now, we ignore any information from $X$ and focus on $y$ only.
 #
@@ -168,7 +173,7 @@ print(
 #
 # This represents the probability that an event doesn't occur at or before some given time $t$, i.e. that it happens at some time $T > t$.
 #
-# The most commonly used method to estimate this function is the **Kaplan Meier** estimator. It gives us an **unbiased estimate of the survival probability**.
+# The most commonly used method to estimate this function is the **Kaplan-Meier** estimator. It gives us an **unbiased estimate of the survival probability**. It can be computed as follows:
 #
 # $$\hat{S}(t)=\prod_{i: t_i\leq t} (1 - \frac{d_i}{n_i})$$
 #
@@ -180,9 +185,11 @@ print(
 #
 # Note that **individuals that were censored before $t_i$ are no longer considered at risk at $t_i$**.
 #
-# Note that, contrary to machine learning regressors, this estimator is **unconditional**: it only extracts information from $y$ only, and cannot model information about each individual typically provided in a feature matrix $X$.
+# Contrary to machine learning regressors, this estimator is **unconditional**: it only extracts information from $y$ only, and cannot model information about each individual typically provided in a feature matrix $X$.
 #
-# In real-world application, we aim at estimating $\mathbb{E}[T]$ or $Q_{50\%}[T]$. The latter quantity represents the median survival duration i.e. the duration before 50% of our population at risk experiment the event. We can also be interested in estimating the survival probability after some reference time $P(T > t_{ref})$, e.g. a random clinical trial estimating the capacity of a drug to improve the survival probability after 6 months.
+# In a real-world application, we aim at estimating $\mathbb{E}[T]$ or $Q_{50\%}[T]$. The latter quantity represents the median survival duration i.e. the duration before 50% of our population at risk experiment the event.
+#
+# We can also be interested in estimating the survival probability after some reference time $P(T > t_{ref})$, e.g. a random clinical trial estimating the capacity of a drug to improve the survival probability after 6 months.
 
 # %%
 import plotly.express as px
@@ -192,6 +199,12 @@ from sksurv.nonparametric import kaplan_meier_estimator
 times, km_survival_probabilities = kaplan_meier_estimator(
     truck_failure_events["event"], truck_failure_events["duration"]
 )
+
+# %%
+times
+
+# %%
+km_survival_probabilities
 
 # %%
 km_proba = pd.DataFrame(
@@ -224,15 +237,17 @@ fig.update_layout(
 
 
 # %% [markdown]
-# We can read the median time to event directly from this curve reading the time at the intersection of the estimate of the survival curve with the 50% failure probility horizontal line.
+# We can read the median time to event directly from this curve: it is the time at the intersection of the estimate of the survival curve with the horizontal line for a 50% failure probility.
 #
-# Note that since we have censored data, $\hat{S}(t)$ doesn't reach 0 within our observation window. We would need to extend the observation window to estimate the survival function beyond this limit.
+# Since we have censored data, $\hat{S}(t)$ doesn't reach 0 within our observation window. We would need to extend the observation window to estimate the survival function beyond this limit. **Kaplan-Meier does not attempt the extrapolate beyond the last observed event**.
 
 # %% [markdown]
 # ***Exercice*** <br>
 # Based on `times` and `km_survival_probabilities`, estimate the median survival time.
 #
-# *Hint: You can use `np.searchsorted` on sorted probabilities in increasing order (reverse order of the natural ordering of survival probabilities*. Alternatively you can "reverse" the estimate of the survival curve using an `scipy.interpolate.interp1d` and take the value at probability 0.5.
+# *Hint: You can use `np.searchsorted` on sorted probabilities in increasing order (reverse the natural order of the survival probabilities*.
+#
+# *Hint: Alternatively you can "inverse" the estimate of the survival curve using `scipy.interpolate.interp1d` and take the value at probability 0.5.*
 
 # %%
 def compute_median_survival_time(times, survival_probabilities):
@@ -284,13 +299,13 @@ def compute_median_survival_time_with_interp1d(times, survival_probabilities):
 compute_median_survival_time_with_interp1d(times, km_survival_probabilities)
 
 # %% [markdown]
-# Here is the true median survival time from the same data without any censoring (generally not avaible in a real life setting).
+# Here is the **true median survival time from the same data without any censoring** (generally not avaible in a real life setting).
 
 # %%
 truck_failure_events_uncensored["duration"].median().round(decimals=1)
 
 # %% [markdown]
-# This empirically confirms that the median survival time estimated by post-processing the KM estimation of the survival curve is a much better way to handle censored data than any the two naive approaches we considered in the beginning of this notebook.
+# This empirically confirms that the median survival time estimated by post-processing the KM estimate of the survival curve is a much better way to handle censored data than any the two naive approaches we considered in the beginning of this notebook.
 
 # %% [markdown]
 # ### Mathematical break
@@ -306,10 +321,10 @@ truck_failure_events_uncensored["duration"].median().round(decimals=1)
 # \end{align}
 # $$
 #
-# where $f(t)$ represents the probability density. This quantity estimates the probability that an event occurs in the next $dt$, independently of this event having happened before.
+# where $f(t)$ represents the event density function, independently of wheter the event has happened before or not.
 
 # %% [markdown]
-# If we integrate $f(t)$, we found the cumulative incidence function (CIF) $F(t)=P(T < t)$, which is the complement of the survival function $S(t)$:
+# If we integrate $f(t)$, we get the cumulative incidence function (CIF) $F(t)=P(T < t)$, which is the complement of the survival function $S(t)$:
 #
 # $$F(t) = 1 - S(t) = \int^t_0 f(u) du$$
 
@@ -332,7 +347,7 @@ truck_failure_events_uncensored["duration"].median().round(decimals=1)
 #
 # In practice, estimating the hazard function from a finite sample estimate of the survival curve can be quite challenging (from a numerical point of view). But the converse often works well.
 #
-# Since our dataset was sampled from known hazard functions (one per record), we can compute the theoretical survival curve by integrating over the time and taking the exponential of the negative. Let's give this a try:
+# Since our dataset was sampled from known hazard functions (one per truck), we can compute the theoretical survival curve by integrating over the time and taking the exponential of the negative. Let's give this a try:
 
 # %%
 with np.load("truck_failure_10k_hazards.npz") as f:
@@ -359,7 +374,9 @@ ax.set(title="Mean survival curve", xlabel="Time (days)")
 ax.legend();
 
 # %% [markdown]
-# We observe that the Kaplan-Meier estimate is an unbiased estimator of the survival curve defined by the true hazard functions. However we observe that then **KM estimate is no longer defined after the time of the last observed failure** (day 2000 in our case). In this dataset, all events are censored past that date: as a result **the KM survival curve does not reach zero** even when the true curve does. Therefore, it is **not possible to compute the mean survival time from the KM-estimate** alone. One would need to make some further assumptions to extrapolate it if necessary.
+# We observe that **Kaplan-Meier is an unbiased estimator of the survival curve** defined by the true hazard functions.
+#
+# However we observe that then **KM estimate is no longer defined after the time of the last observed failure** (day 2000 in our case). In this dataset, all events are censored past that date: as a result **the KM survival curve does not reach zero** even when the true curve does. Therefore, it is **not possible to compute the mean survival time from the KM-estimate** alone. One would need to make some further assumptions to extrapolate it if necessary.
 #
 # Furthermore, not all data generating process necessarily need to reach the 0.0 probability. For instance, survival analysis could be used to model a "time to next snow event" in different regions of the world. We can anticipate that it will never snow in some regions of the world in the foreseeable future.
 
@@ -1025,6 +1042,9 @@ gb_cif.fit(X_train, y_train, time_grid)
 gb_cif_survival_curves = gb_cif.predict_survival_function(X_test, time_grid)
 evaluator("Gradient Boosting CIF", gb_cif_survival_curves)
 
+# %%
+X_train.shape
+
 # %% [markdown]
 # This model is often better than Random Survival Forest but significantly faster to train and requires few feature engineering than a Cox PH model.
 
@@ -1042,6 +1062,9 @@ y_train_large = truck_failure_100k_any_event[train_large_mask]
 
 large_model_evaluator = SurvivalAnalysisEvaluator(y_train_large, y_test, time_grid)
 
+# %%
+X_train_large.shape
+
 # %% [markdown]
 # **Warning**: fitting polynomial Cox PH on the larger training set takes several minutes on a modern laptop. Feel free to skip.
 
@@ -1049,22 +1072,22 @@ large_model_evaluator = SurvivalAnalysisEvaluator(y_train_large, y_test, time_gr
 poly_cox_ph_large_survival_curves = None
 
 # %%
-# # %%time
-# poly_cox_ph_large = make_pipeline(
-#     spline_preprocessor,
-#     Nystroem(kernel="poly", degree=2, n_components=300),
-#     CoxPHSurvivalAnalysis(alpha=1e-4)
-# )
-# poly_cox_ph_large.fit(X_train_large, as_sksurv_recarray(y_train_large))
-# poly_cox_ph_large_survival_funcs = poly_cox_ph_large.predict_survival_function(X_test)
+# %%time
+poly_cox_ph_large = make_pipeline(
+    spline_preprocessor,
+    Nystroem(kernel="poly", degree=2, n_components=300),
+    CoxPHSurvivalAnalysis(alpha=1e-4)
+)
+poly_cox_ph_large.fit(X_train_large, as_sksurv_recarray(y_train_large))
+poly_cox_ph_large_survival_funcs = poly_cox_ph_large.predict_survival_function(X_test)
 
 
-# poly_cox_ph_large_survival_curves = np.vstack(
-#     [
-#         f(time_grid) for f in poly_cox_ph_large_survival_funcs
-#     ]
-# )
-# large_model_evaluator("Polynomial Cox PH (larger training set)", poly_cox_ph_large_survival_curves)
+poly_cox_ph_large_survival_curves = np.vstack(
+    [
+        f(time_grid) for f in poly_cox_ph_large_survival_funcs
+    ]
+)
+large_model_evaluator("Polynomial Cox PH (larger training set)", poly_cox_ph_large_survival_curves)
 
 # %% [markdown]
 # Fitting `GradientBoostedCIF` on the larger dataset should take a fraction of a minute on a modern laptop:
@@ -1114,6 +1137,9 @@ theoretical_survival_curves.shape
 
 # %% [markdown]
 # Finally, we can evaluate the performance metrics (IBS and C-index) of the theoretical curves on the same test events and `time_grid` to be able to see how far our best predictive survival analysis models are from the optimal model:
+
+# %%
+time_grid.shape
 
 # %%
 n_total_days = any_event_hazards.shape[-1]
