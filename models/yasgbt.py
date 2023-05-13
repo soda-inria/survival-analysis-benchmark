@@ -1,3 +1,7 @@
+"""
+This file is an archive of the previous GradientBoostedCIF model, saved for the sake
+of reproducibility of the benchmarks `kkbox_cv_benchmark` and `kkbox_cv_yasgbt`.
+"""
 from abc import ABC
 import numpy as np
 from tqdm import tqdm

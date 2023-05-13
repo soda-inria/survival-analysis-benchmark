@@ -1,3 +1,6 @@
+"""
+This file is a quick demo to leverage model versioning with MLFlow for production purposes.
+"""
 import os
 import numpy as np
 import pandas as pd
